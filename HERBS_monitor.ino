@@ -24,8 +24,11 @@ Author(s):
 #define LORA_FREQUENCY_US        905.2
 
 #define LORA_BANDWIDTH_7_8       7.8
+#define LORA_BANDWIDTH_20_8      20.8
 #define LORA_BANDWIDTH_62_5      62.5
 
+#define LORA_SPREADING_FACTOR_5  5
+#define LORA_SPREADING_FACTOR_6  6
 #define LORA_SPREADING_FACTOR_7  7
 #define LORA_SPREADING_FACTOR_8  8
 #define LORA_SPREADING_FACTOR_9  9
@@ -89,9 +92,11 @@ void loop() {
 bool LoRaInit(){
   int16_t res = radio.begin(
     LORA_FREQUENCY_US,
-    LORA_BANDWIDTH_7_8,
-    LORA_SPREADING_FACTOR_8,
-    LORA_CODING_RATE_4_5
+    LORA_BANDWIDTH_20_8,
+    LORA_SPREADING_FACTOR_5,
+    LORA_CODING_RATE_4_5,
+    0x12,
+    22
   );
 
   return res == 0;
