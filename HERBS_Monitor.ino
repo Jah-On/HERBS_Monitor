@@ -10,6 +10,7 @@ Author(s):
 #define DEBUG 
 
 // STL Includes
+#include <array>  // Fixed size lists
 #include <chrono> // Time related
 #include <list>   // Front/Back optimized lists
 
@@ -17,8 +18,13 @@ Author(s):
 #include <timers.h>
 
 // External Includes
+#include <float16.h>
 #include <heltec_unofficial.h>
+#include <mbedtls/aes.h>
 #include <arduino-timer.h>
+
+// Include keys
+#include "secrets.h"
 
 // LoRa constants
 #define LORA_FREQUENCY_US        905.2
@@ -41,26 +47,42 @@ Author(s):
 #define LORA_CODING_RATE_4_7     7
 #define LORA_CODING_RATE_4_8     8
 
+#define MONITOR_ID 0x1234567890ABCDEF
+
+#define PACKET_BUFFER_SIZE 16
+
 typedef struct PacketData {
-  uint64_t id;
-  int8_t   temperature; // Celcius
-  uint8_t  humidity;    // Percentage from 0 to 100
-  uint16_t preassure;   // Millibars
+  uint64_t id          = MONITOR_ID;
+  uint8_t  packetNumber;
+  int8_t   temperature;  // Celcius
+  uint8_t  humidity;     // Percentage from 0 to 100
+  uint16_t preassure;    // Millibars
+  float16  acoustics;    // Decibels
+  uint16_t hiveMass;     // Grams
 } PacketData;
 
-PacketData data = {
-  0x1234567890ABCDEF,
-  0,
-  0,
-  0
-};
+const size_t packetSize = sizeof(PacketData);
+
+std::array<PacketData, PACKET_BUFFER_SIZE> packetBuffer;
+
+size_t currentPacket = 0;
 
 size_t sentCount = 0;
 
 Timer<8, millis> timer;
 
+esp_aes_context aesContext;
+
 void setup() {
   heltec_setup();
+
+  for (size_t index = 0; index < PACKET_BUFFER_SIZE; index++){
+    packetBuffer[index].packetNumber = index;
+  }
+
+  // AES Init
+  esp_aes_init(&aesContext);
+  esp_aes_setkey(&aesContext, AES_KEY, 128);
 
   // Setup display
   display.setFont(ArialMT_Plain_16);
@@ -103,14 +125,31 @@ bool LoRaInit(){
 }
 
 bool updateTemperature(void* cbData){
-  data.temperature = (int8_t)heltec_temperature();
+  packetBuffer[currentPacket].temperature = (int8_t)heltec_temperature();
   return true;
 }
 
 bool broadcastPacket(void* cbData){
-  radio.transmit((uint8_t*)&data, sizeof(PacketData));
+  uint8_t encryptedBuffer[packetSize];
+  
+  esp_aes_crypt_cbc(
+    &aesContext, 
+    MBEDTLS_AES_ENCRYPT,
+    16, 
+    aesIV,
+    (uint8_t*)&packetBuffer.at(currentPacket),
+    encryptedBuffer
+  );
+
+#if defined(DEBUG)
+  Serial.printf("Sending packet %d\n", packetBuffer.at(currentPacket).packetNumber);
+#endif
+
+  radio.transmit(encryptedBuffer, 16);
 
   sentCount++;
+
+  currentPacket++;
 
   return true;
 }
