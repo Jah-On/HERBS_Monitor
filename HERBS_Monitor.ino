@@ -7,21 +7,22 @@ Author(s):
 
 // Comment out for actual use to save energy
 // Otherwise it will print useful info over serial
-#define DEBUG 
+// #define DEBUG 
+
+// HERBS Data Types
+#include "herbsTypes.h"
 
 // STL Includes
 #include <array>  // Fixed size lists
 #include <chrono> // Time related
 #include <list>   // Front/Back optimized lists
 
-// Arduino Includes
-#include <timers.h>
-
 // External Includes
-#include <float16.h>
-#include <heltec_unofficial.h>
-#include <mbedtls/aes.h>
 #include <arduino-timer.h>
+#include <Crypto.h>
+#include <ChaChaPoly.h>
+#include <heltec_unofficial.h>
+#include <SHT31.h>
 
 // Include keys
 #include "secrets.h"
@@ -47,42 +48,32 @@ Author(s):
 #define LORA_CODING_RATE_4_7     7
 #define LORA_CODING_RATE_4_8     8
 
-#define MONITOR_ID 0x1234567890ABCDEF
+#define PACKET_BUFFER_SIZE 2
 
-#define PACKET_BUFFER_SIZE 16
-
-typedef struct PacketData {
-  uint64_t id          = MONITOR_ID;
-  uint8_t  packetNumber;
-  int8_t   temperature;  // Celcius
-  uint8_t  humidity;     // Percentage from 0 to 100
-  uint16_t preassure;    // Millibars
-  float16  acoustics;    // Decibels
-  uint16_t hiveMass;     // Grams
-} PacketData;
-
-const size_t packetSize = sizeof(PacketData);
-
-std::array<PacketData, PACKET_BUFFER_SIZE> packetBuffer;
+std::array<Packet, PACKET_BUFFER_SIZE> packetBuffer;
 
 size_t currentPacket = 0;
 
+ChaChaPoly crypto = ChaChaPoly();
+
 size_t sentCount = 0;
 
-Timer<8, millis> timer;
+Timer<6, millis> timer;
 
-esp_aes_context aesContext;
+Timer<6, millis>::Task send;
+
+SHT31 sht31 = SHT31();
 
 void setup() {
-  heltec_setup();
-
-  for (size_t index = 0; index < PACKET_BUFFER_SIZE; index++){
-    packetBuffer[index].packetNumber = index;
+  for (size_t packet = 0; packet < packetBuffer.size(); ++packet){
+    packetBuffer[packet].id = MONITOR_ID;
   }
 
-  // AES Init
-  esp_aes_init(&aesContext);
-  esp_aes_setkey(&aesContext, AES_KEY, 128);
+  heltec_setup();
+
+  // Init encryption
+  if (!crypto.setKey(encryption.key, 16)) throw("Could not set key");
+  if (!crypto.setIV(encryption.iv, 8))    throw("Could not set IV");
 
   // Setup display
   display.setFont(ArialMT_Plain_16);
@@ -96,15 +87,26 @@ void setup() {
   default:
     display.println("LoRa Failed");
     break;
+
   }
 
   display.display();
 
-  timer.every(1e4, broadcastPacket);
-  timer.every(1e3, updateTemperature);
-  timer.every(1e2, updateDisplay);
-}
+  sht31.begin();
 
+  radio.setPacketReceivedAction(onRecieve);
+  radio.startReceive();
+
+  send = timer.every(3e5, sendDataPacket);
+
+  // Sensor timed callbacks
+  timer.every(1e3, updateTemperature);
+  timer.every(1e3, updateHumidity);
+
+  timer.every(1e2, updateDisplay);
+
+  sendEventPacket(EventCode::NODE_ONLINE);
+}
 
 void loop() {
   timer.tick();
@@ -125,33 +127,142 @@ bool LoRaInit(){
 }
 
 bool updateTemperature(void* cbData){
-  packetBuffer[currentPacket].temperature = (int8_t)heltec_temperature();
+  DataPacket& data = packetBuffer[currentPacket].type.data;
+  data.temperature = (int8_t)sht31.getTemperature();
   return true;
 }
 
-bool broadcastPacket(void* cbData){
-  uint8_t encryptedBuffer[packetSize];
-  
-  esp_aes_crypt_cbc(
-    &aesContext, 
-    MBEDTLS_AES_ENCRYPT,
-    16, 
-    aesIV,
-    (uint8_t*)&packetBuffer.at(currentPacket),
-    encryptedBuffer
-  );
+bool updateHumidity(void* cbData){
+  DataPacket& data = packetBuffer[currentPacket].type.data;
+  data.humidity = (uint8_t)sht31.getHumidity();
+  return true;
+}
+
+void sendEventPacket(EventCode event){
+  EventPacket& packet = packetBuffer[currentPacket].type.event;
+
+  packet.eventCode = event;
+
+  sendPacket(eventPacketSize);
+}
+
+bool sendDataPacket(void* cbData){
+  sendPacket(dataPacketSize);
+
+  send = timer.every(6e4, sendDataPacket);
 
 #if defined(DEBUG)
-  Serial.printf("Sending packet %d\n", packetBuffer.at(currentPacket).packetNumber);
+  Serial.printf("Sent packet...\n");
 #endif
 
-  radio.transmit(encryptedBuffer, 16);
+  return false;
+}
+
+void sendPacket(size_t packetLength){
+  radio.clearPacketReceivedAction();
+
+  Packet& packet = packetBuffer[currentPacket];
+
+  crypto.encrypt(
+    packet.type.encrypted,
+    (uint8_t*)&packet.type,
+    packetLength - idSize - tagSize
+  );
+
+  crypto.computeTag(&packet.tag, tagSize);
+
+  radio.transmit((uint8_t*)&packet, packetLength);
 
   sentCount++;
 
-  currentPacket++;
+  radio.setPacketReceivedAction(onRecieve);
+  radio.startReceive();
+}
 
-  return true;
+void onRecieve(){
+  uint8_t dump;
+  size_t  packetSize = radio.getPacketLength(true);
+
+  switch (packetSize) {
+  case eventPacketSize:
+    break;
+  default:
+
+#ifdef DEBUG
+  Serial.printf("Invalid packet size of %d recieved.\n", packetSize);
+#endif
+
+    radio.readData(&dump, 1);
+    return;
+  }
+
+  uint8_t encryptedData[sizeof(EventPacket)];
+  Packet  packet;
+
+  radio.readData(
+    (uint8_t*)&packet, 
+    packetSize
+  );
+
+  memcpy(encryptedData, packet.type.encrypted, sizeof(EventPacket));
+
+  if (packet.id != MONITOR_ID) return;
+
+  crypto.decrypt(
+    (uint8_t*)&packet.type, 
+    encryptedData, 
+    sizeof(EventPacket)
+  );
+
+  ChaChaPoly newCrypt;
+
+  if (!crypto.checkTag(&packet.tag, tagSize)){
+    if (!newCrypt.setKey(encryption.key, 16)) throw("Could not set key");
+    if (!newCrypt.setIV(encryption.iv, 8))    throw("Could not set IV");
+
+    newCrypt.decrypt(
+      (uint8_t*)&packet.type, 
+      encryptedData, 
+      sizeof(EventPacket)
+    );
+
+    if (!newCrypt.checkTag(&packet.tag, tagSize)){
+
+#ifdef DEBUG
+  Serial.printf("Event packet tag failed.\n");
+#endif
+      
+      newCrypt.clear();
+      return;
+    }
+  }
+
+#ifdef DEBUG
+  Serial.printf("Code %d recieved.\n", packet.type.event.eventCode);
+#endif
+
+  switch (packet.type.event.eventCode) {
+  case EventCode::DATA_RECVED:
+
+#ifdef DEBUG
+  Serial.printf("Gateway ACKED.\n");
+#endif
+
+    currentPacket ^= 1;
+    timer.cancel(send);
+    send = timer.every(3e5, sendDataPacket);
+    break;
+  case EventCode::NODE_ONLINE:
+
+#ifdef DEBUG
+  Serial.printf("Gateway back online.\n");
+#endif
+
+    crypto = newCrypt;
+    break;
+  default:
+    return;
+  }
 }
 
 bool updateDisplay(void* cbData){
