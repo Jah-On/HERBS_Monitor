@@ -118,6 +118,9 @@ void setup() {
 }
 
 void loop() {
+  // while (Wire.available()){
+  //   Serial.println("I2C comms discovered");
+  // }
   timer.tick();
   heltec_delay(1);
 }
@@ -136,12 +139,11 @@ bool LoRaInit(){
 }
 
 bool peripheralInit(){
-  Wire.setPins(I2C_SDA, I2C_SCL);
-
+  Wire.begin(I2C_SDA, I2C_SCL, 115200);
   sht31.begin();
   
-  scaleA.begin(SCALE_DA_A, SCALE_SCK_A);
-  scaleB.begin(SCALE_DA_B, SCALE_SCK_B);
+  // scaleA.begin(SCALE_DA_A, SCALE_SCK_A);
+  // scaleB.begin(SCALE_DA_B, SCALE_SCK_B);
 
   return true;
 }
@@ -177,7 +179,8 @@ bool updateMass(void* cbData){
 
 bool updateSound(void* cbData){
   DataPacket& data = packetBuffer[currentPacket].type.data;
-  data.acoustics = float16((double)analogRead(SOUND_ADC));
+  // data.acoustics = float16((double)analogRead(SOUND_ADC));
+  // Serial.printf("adc is %d\n", analogReadMilliVolts(SOUND_ADC));
 
   return true;
 }

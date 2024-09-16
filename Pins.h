@@ -1,6 +1,6 @@
 // I2C 
-#define I2C_SCL 33
-#define I2C_SDA 34
+#define I2C_SCL 42
+#define I2C_SDA 41
 
 // Weight Sensor IO
 #define SCALE_DA_A 48
