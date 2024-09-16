@@ -7,7 +7,7 @@ Author(s):
 
 // Comment out for actual use to save energy
 // Otherwise it will print useful info over serial
-// #define DEBUG 
+#define DEBUG 
 
 // HERBS Data Types
 #include "herbsTypes.h"
@@ -22,31 +22,17 @@ Author(s):
 #include <Crypto.h>
 #include <ChaChaPoly.h>
 #include <heltec_unofficial.h>
-#include <SHT31.h>
+#include <HX711.h>
+#include <SHT31.h> // Includes Wire
 
 // Include keys
 #include "secrets.h"
 
 // LoRa constants
-#define LORA_FREQUENCY_US        905.2
+#include "LoRa.h"
 
-#define LORA_BANDWIDTH_7_8       7.8
-#define LORA_BANDWIDTH_20_8      20.8
-#define LORA_BANDWIDTH_62_5      62.5
-
-#define LORA_SPREADING_FACTOR_5  5
-#define LORA_SPREADING_FACTOR_6  6
-#define LORA_SPREADING_FACTOR_7  7
-#define LORA_SPREADING_FACTOR_8  8
-#define LORA_SPREADING_FACTOR_9  9
-#define LORA_SPREADING_FACTOR_10 10
-#define LORA_SPREADING_FACTOR_11 11
-#define LORA_SPREADING_FACTOR_12 12
-
-#define LORA_CODING_RATE_4_5     5
-#define LORA_CODING_RATE_4_6     6
-#define LORA_CODING_RATE_4_7     7
-#define LORA_CODING_RATE_4_8     8
+// Pins
+#include "Pins.h"
 
 #define PACKET_BUFFER_SIZE 2
 
@@ -58,13 +44,22 @@ ChaChaPoly crypto = ChaChaPoly();
 
 size_t sentCount = 0;
 
-Timer<6, millis> timer;
+Timer<8, millis> timer;
 
-Timer<6, millis>::Task send;
+Timer<8, millis>::Task send;
 
 SHT31 sht31 = SHT31();
 
+HX711 scaleA;
+HX711 scaleB;
+
 void setup() {
+#if defined(DEBUG)
+
+  Serial.begin(115200);
+
+#endif
+
   for (size_t packet = 0; packet < packetBuffer.size(); ++packet){
     packetBuffer[packet].id = MONITOR_ID;
   }
@@ -87,12 +82,19 @@ void setup() {
   default:
     display.println("LoRa Failed");
     break;
+  }
+
+  switch (peripheralInit()) {
+  case true:
+    display.println("Peripherals Initialized");
+    break;
+  default:
+    display.println("Peripherals Failed");
+    break;
 
   }
 
   display.display();
-
-  sht31.begin();
 
   radio.setPacketReceivedAction(onRecieve);
   radio.startReceive();
@@ -102,6 +104,13 @@ void setup() {
   // Sensor timed callbacks
   timer.every(1e3, updateTemperature);
   timer.every(1e3, updateHumidity);
+  timer.every(1e3, updatePressure);
+  timer.every(1e3, updateMass);
+  timer.every(1e3, updateSound);
+
+#if defined (DEBUG)
+  timer.every(5e3, printData);
+#endif
 
   timer.every(1e2, updateDisplay);
 
@@ -126,15 +135,62 @@ bool LoRaInit(){
   return res == 0;
 }
 
+bool peripheralInit(){
+  Wire.setPins(I2C_SDA, I2C_SCL);
+
+  sht31.begin();
+  
+  scaleA.begin(SCALE_DA_A, SCALE_SCK_A);
+  scaleB.begin(SCALE_DA_B, SCALE_SCK_B);
+
+  return true;
+}
+
 bool updateTemperature(void* cbData){
   DataPacket& data = packetBuffer[currentPacket].type.data;
   data.temperature = (int8_t)sht31.getTemperature();
+
   return true;
 }
 
 bool updateHumidity(void* cbData){
   DataPacket& data = packetBuffer[currentPacket].type.data;
   data.humidity = (uint8_t)sht31.getHumidity();
+
+  return true;
+}
+
+bool updatePressure(void* cbData){
+  DataPacket& data = packetBuffer[currentPacket].type.data;
+  data.pressure = 0;
+
+  return true;
+}
+
+bool updateMass(void* cbData){
+  DataPacket& data = packetBuffer[currentPacket].type.data;
+  data.hiveMass  = (uint16_t)(scaleA.get_units()*1e3);
+  data.hiveMass += (uint16_t)(scaleB.get_units()*1e3);
+  
+  return true;
+}
+
+bool updateSound(void* cbData){
+  DataPacket& data = packetBuffer[currentPacket].type.data;
+  data.acoustics = float16((double)analogRead(SOUND_ADC));
+
+  return true;
+}
+
+bool printData(void* cbData){
+  DataPacket& data = packetBuffer[currentPacket].type.data;
+
+  Serial.printf("Temperature is %d\n", data.temperature);
+  Serial.printf("Humidity is %d\n",    data.humidity);
+  Serial.printf("Pressure is %d\n",    data.pressure);
+  Serial.printf("Hive mass is %d\n",   data.hiveMass);
+  Serial.printf("Sound level is %f\n", data.acoustics);
+
   return true;
 }
 
@@ -238,7 +294,7 @@ void onRecieve(){
   }
 
 #ifdef DEBUG
-  Serial.printf("Code %d recieved.\n", packet.type.event.eventCode);
+  Serial.printf("Code %c recieved.\n", (char)packet.type.event.eventCode);
 #endif
 
   switch (packet.type.event.eventCode) {
