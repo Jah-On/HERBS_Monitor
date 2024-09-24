@@ -1,13 +1,4 @@
-#include <math.h>
-#include <string.h>
-#include <algorithm>
-#include "HardwareSerial.h"
-#include <cstddef>
-#include <sys/types.h>
-#include "WString.h"
-#include <sys/_stdint.h>
-#include "esp32-hal.h"
-#include "Wire.h"
+#include <stdint.h>
 #include "SHT31.hpp"
 
 bool SHT31::sensorRead(){
@@ -18,7 +9,7 @@ bool SHT31::sensorRead(){
   wireHandle->requestFrom(i2cAddress, 6);
 
   if (wireHandle->readBytes(buffer, 6) != 6        ) return false;
-  if (crc8(buffer, 2)                  != buffer[2]) return false; // Temperature CRC
+  if (crc8(buffer,     2)              != buffer[2]) return false; // Temperature CRC
   if (crc8(buffer + 3, 2)              != buffer[5]) return false; // Humidity CRC
   
   uint16_t tempT = ((uint16_t)buffer[0] << 8) | buffer[1];
@@ -72,8 +63,8 @@ double SHT31::readHumidity(){
 template<NUMBER T, NUMBER H>
 void SHT31::readBoth(T& t, H& h){
   if (!sensorRead()){
-    t = NAN;
-    h = NAN;
+    t = UINT8_MAX;
+    h = UINT8_MAX;
     return;
   }
 

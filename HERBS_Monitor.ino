@@ -18,11 +18,11 @@ Author(s):
 #include <list>    // Front/Back optimized lists
 
 // External Includes
+#include <Adafruit_BMP3XX.h>
 #include <arduino-timer.h>
 #include <Crypto.h>
 #include <ChaChaPoly.h>
 #include <heltec_unofficial.h>
-#include <HX711.h>
 #include <SHT31.hpp>
 
 // Include keys
@@ -35,6 +35,8 @@ Author(s):
 #include "Pins.h"
 
 #define PACKET_BUFFER_SIZE 2
+
+typedef Adafruit_BMP3XX BMP390;
 
 std::array<Packet, PACKET_BUFFER_SIZE> packetBuffer;
 
@@ -50,10 +52,11 @@ Timer<8, millis>::Task send;
 
 TwoWire externI2C = TwoWire(0x01);
 
-SHT31 sht31 = SHT31(&externI2C);
+SHT31  sht31  = SHT31(&externI2C);
+BMP390 bmp390 = BMP390();
 
-HX711 scaleA;
-HX711 scaleB;
+// HX711 scaleA;
+// HX711 scaleB;
 
 void setup() {
   delay(1000);
@@ -186,8 +189,7 @@ bool peripheralInit() {
   externI2C.setBufferSize(6);
   
   sht31.begin();
-
-
+  bmp390.begin_I2C(BMP3XX_DEFAULT_ADDRESS, &externI2C);
 
 #if defined (DEBUG)
   // Serial.printf("SHT31 CRC verifiy: %d\n", SHT31::crc8(enc, 2));
@@ -203,22 +205,29 @@ bool updateFromSHT31(void* cbData) {
   DataPacket& data = packetBuffer[currentPacket].type.data;
   sht31.readBoth(data.temperature, data.humidity);
 
-  Serial.printf("%d\n", data.humidity);
+#ifdef DEBUG
+  Serial.printf("Temperature is %d\n", data.temperature);
+  Serial.printf("Humidity is %d\n",    data.humidity);
+#endif
 
   return true;
 }
 
 bool updatePressure(void* cbData) {
   DataPacket& data = packetBuffer[currentPacket].type.data;
-  data.pressure = 0;
+  data.pressure = (bmp390.readPressure()*100); // Pa to mbar
+
+#ifdef DEBUG
+  Serial.printf("Pressure is %d\n", data.pressure);
+#endif
 
   return true;
 }
 
 bool updateMass(void* cbData) {
-  DataPacket& data = packetBuffer[currentPacket].type.data;
-  data.hiveMass = (uint16_t)(scaleA.get_units() * 1e3);
-  data.hiveMass += (uint16_t)(scaleB.get_units() * 1e3);
+  // DataPacket& data = packetBuffer[currentPacket].type.data;
+  // data.hiveMass = (uint16_t)(scaleA.get_units() * 1e3);
+  // data.hiveMass += (uint16_t)(scaleB.get_units() * 1e3);
 
   return true;
 }
@@ -226,7 +235,7 @@ bool updateMass(void* cbData) {
 bool updateSound(void* cbData) {
   // DataPacket& data = packetBuffer[currentPacket].type.data;
   // data.acoustics = float16((double)analogRead(SOUND_ADC));
-  Serial.printf("%d\n", analogReadMilliVolts(SOUND_ADC));
+  Serial.printf("%lu\n", analogReadMilliVolts(SOUND_ADC));
 
   return true;
 }
