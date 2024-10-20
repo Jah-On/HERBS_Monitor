@@ -1,3 +1,4 @@
+#include <cstdint>
 #ifndef HERBS_TYPES_H
 #define HERBS_TYPES_H
 
@@ -18,7 +19,7 @@ typedef struct DataPacket {
   int8_t   temperature;  // Celcius
   uint8_t  humidity;     // Percentage from 0 to 100
   uint16_t pressure;     // Millibars
-  float16  acoustics;    // Decibels
+  uint16_t acoustics;    // Audio Level
   uint16_t hiveMass;     // Grams
 } DataPacket;
 

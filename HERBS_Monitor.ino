@@ -24,6 +24,7 @@ Author(s):
 #include <ChaChaPoly.h>
 #include <heltec_unofficial.h>
 #include <SHT31.hpp>
+#include <HX711.h>
 
 // Include keys
 #include "secrets.h"
@@ -52,11 +53,9 @@ Timer<8, millis>::Task send;
 
 TwoWire externI2C = TwoWire(0x01);
 
-SHT31  sht31  = SHT31(&externI2C);
-BMP390 bmp390 = BMP390();
-
-// HX711 scaleA;
-// HX711 scaleB;
+SHT31  sht31   = SHT31(&externI2C);
+BMP390 bmp390  = BMP390();
+HX711  loadCell;
 
 void setup() {
   delay(1000);
@@ -100,8 +99,8 @@ void setup() {
 
   // Sensor timed callbacks
   timer.every(10e3, updateFromSHT31);
-  // timer.every(1e3, updatePressure);
-  // timer.every(1e3, updateMass);
+  timer.every(10e3, updatePressure);
+  // timer.every(10e3, updateMass);
   // timer.every(1e2, updateSound);
   // timer.every(5e3, i2cScanner);
 
@@ -190,6 +189,9 @@ bool peripheralInit() {
   
   sht31.begin();
   bmp390.begin_I2C(BMP3XX_DEFAULT_ADDRESS, &externI2C);
+  bmp390.setPressureOversampling(0b101);
+
+  loadCell.begin(39, 40);
 
 #if defined (DEBUG)
   // Serial.printf("SHT31 CRC verifiy: %d\n", SHT31::crc8(enc, 2));
@@ -225,7 +227,13 @@ bool updatePressure(void* cbData) {
 }
 
 bool updateMass(void* cbData) {
-  // DataPacket& data = packetBuffer[currentPacket].type.data;
+  DataPacket& data = packetBuffer[currentPacket].type.data;
+  data.hiveMass = loadCell.get_units(10);
+
+#ifdef DEBUG
+  Serial.printf("Mass is %d\n", data.hiveMass);
+#endif
+
   // data.hiveMass = (uint16_t)(scaleA.get_units() * 1e3);
   // data.hiveMass += (uint16_t)(scaleB.get_units() * 1e3);
 
