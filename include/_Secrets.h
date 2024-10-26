@@ -1,6 +1,6 @@
 /******************************************************************************
 
-Rename this file to secrets.h after modifying!
+Rename this file to Secrets.h after modifying!
 
 ******************************************************************************/
 
