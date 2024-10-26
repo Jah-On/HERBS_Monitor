@@ -32,4 +32,4 @@
 *.app
 
 # Misc
-secrets.h
+include/Secrets.h

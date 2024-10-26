@@ -10,3 +10,4 @@
 
 // Sound Sensor
 #define SOUND_ADC 7
+#define SOUND_VCC 48

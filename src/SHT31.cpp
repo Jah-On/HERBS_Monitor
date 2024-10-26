@@ -1,5 +1,4 @@
-#include <stdint.h>
-#include "SHT31.hpp"
+#include <include/SHT31.hpp>
 
 bool SHT31::sensorRead(){
   writeCommand(MEAS_HIG);
