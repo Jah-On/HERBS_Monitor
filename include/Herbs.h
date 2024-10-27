@@ -1,5 +1,3 @@
-#include <sys/_stdint.h>
-#include <cstdint>
 #ifndef HERBS_TYPES_H
 #define HERBS_TYPES_H
 
