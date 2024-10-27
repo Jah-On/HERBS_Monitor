@@ -3,9 +3,6 @@
 #ifndef HERBS_TYPES_H
 #define HERBS_TYPES_H
 
-#include <stdint.h>
-#include <float16.h>
-
 typedef struct MonitorEncryption {
   uint8_t key[17];
   uint8_t iv[9];

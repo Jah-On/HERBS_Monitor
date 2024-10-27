@@ -61,6 +61,10 @@ BMP390 bmp390  = BMP390();
 uint16_t audioBuffer[32] = {0};
 uint8_t  audioBufferSize = 0;
 
+// Global variables for recieve callback
+uint8_t  encryptedEventData[sizeof(EventPacket)];
+Packet   rcvdPacket;
+
 void setup() {
   #if defined(DEBUG)
   Serial.begin(115200);
@@ -231,42 +235,47 @@ void sendPacket(Packet& packet, size_t packetLength) {
 }
 
 void onRecieve() {
-  uint8_t dump;
-  size_t packetSize = radio.getPacketLength(true);
-
-  if (packetSize != eventPacketSize) {
-    radio.readData(&dump, 1);
+  switch (radio.getPacketLength(true)) {
+  case eventPacketSize:
+    break;
+  default:
+    radio.readData(encryptedEventData, 1);
     return;
   }
 
-  uint8_t encryptedData[sizeof(EventPacket)];
-  Packet packet;
+  DEBUG_PRINT("Recieved packet size good.");
 
-  radio.readData((uint8_t*)&packet, packetSize);
+  radio.readData((uint8_t*)&rcvdPacket.id, sizeof(rcvdPacket.id));
 
-  memcpy(encryptedData, packet.type.encrypted, sizeof(EventPacket));
+  if (rcvdPacket.id != MONITOR_ID) return;
 
-  if (packet.id != MONITOR_ID) return;
+  DEBUG_PRINT("Recieved packet is for node.");
+
+  radio.readData(
+    (uint8_t*)&rcvdPacket.tag, 
+    eventPacketSize - sizeof(rcvdPacket.id)
+  );
+  memcpy(encryptedEventData, rcvdPacket.type.encrypted, sizeof(EventPacket));
 
   crypto.decrypt(
-    (uint8_t*)&packet.type,
-    encryptedData,
+    (uint8_t*)&rcvdPacket.type,
+    encryptedEventData,
     sizeof(EventPacket)
   );
 
   ChaChaPoly newCrypt;
 
-  if (!crypto.checkTag(&packet.tag, tagSize)) {
+  if (!crypto.checkTag(&rcvdPacket.tag, tagSize)) {
     if (!newCrypt.setKey(encryption.key, 16)) throw("Could not set key");
     if (!newCrypt.setIV(encryption.iv, 8))    throw("Could not set IV");
 
     newCrypt.decrypt(
-      (uint8_t*)&packet.type,
-      encryptedData,
+      (uint8_t*)&rcvdPacket.type,
+      encryptedEventData,
       sizeof(EventPacket)
     );
 
-    if (!newCrypt.checkTag(&packet.tag, tagSize)) {
+    if (!newCrypt.checkTag(&rcvdPacket.tag, tagSize)) {
       DEBUG_PRINT("Event packet tag failed.\n");
 
       newCrypt.clear();
@@ -274,7 +283,7 @@ void onRecieve() {
     }
   }
 
-  switch (packet.type.event.eventCode) {
+  switch (rcvdPacket.type.event.eventCode) {
     case EventCode::DATA_RECVED:
       DEBUG_PRINT("Gateway acknowledged.");
 
