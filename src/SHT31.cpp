@@ -67,8 +67,9 @@ void SHT31::readBoth(T& t, H& h){
     return;
   }
 
-  t = temperature;
-  h = humidity;
+  // Rounding
+  t = temperature + 0.5;
+  h = humidity + 0.5;
 }
 
 uint8_t SHT31::crc8(uint8_t* encoded, size_t length){

@@ -30,6 +30,9 @@ Author(s):
 // STL Includes
 #include <list>    // Front/Back optimized lists
 
+// ESP32 Includes
+#include <esp_bt.h>
+
 // External Includes
 #include <Adafruit_BMP3XX.h>
 #include <arduino-timer.h>
@@ -38,6 +41,8 @@ Author(s):
 #include <include/SHT31.hpp>
 
 #define PACKET_BUFFER_SIZE 2
+#define PACKET_SEND_RATE   60000 // in ms
+#define PACKET_RETRY_RATE  60000 // in ms
 
 typedef Adafruit_BMP3XX BMP390;
 
@@ -47,7 +52,7 @@ size_t currentPacket = 0;
 
 ChaChaPoly crypto = ChaChaPoly();
 
-size_t sentCount = 0;
+uint8_t failedSends = 0;
 
 Timer<6, millis> timer;
 
@@ -86,30 +91,31 @@ void setup() {
   if (!initLoRa())        return displayError("LoRa init failed!");
   if (!initPeripherals()) return displayError("Peripheral init \nfailed!");
 
-  display.displayOff(); // If no errors then turn off the display
+  // If no errors then turn off the display 
+  display.displayOff();
 
-  radio.setPacketReceivedAction(onRecieve);
-  radio.startReceive();
-
-  send = timer.every(60e3, sendDataPacket);
+  send = timer.every(PACKET_SEND_RATE, sendDataPacket);
 
   // Sensor read callbacks
-  timer.every(1000, updateFromSHT31);
-  timer.every(1000, updateFromBMP390);
-  timer.every( 950, updateSound);
+  timer.every(5000, updateFromSHT31);
+  timer.every(5000, updateFromBMP390);
+  timer.every(4950, updateSound);
 
   #ifdef DEBUG
   timer.every(10e3, printData);
   #endif
 
-  delay(500);
+  esp_sleep_enable_ulp_wakeup();
+  esp_sleep_enable_timer_wakeup(50000);
 
   sendEventPacket(EventCode::NODE_ONLINE);
+
+  radio.sleep();
 }
 
 void loop() {
   timer.tick();
-  heltec_delay(1);
+  esp_light_sleep_start();
 }
 
 bool initLoRa() {
@@ -208,7 +214,14 @@ void sendEventPacket(EventCode event) {
 bool sendDataPacket(void* cbData) {
   sendPacket(packetBuffer[currentPacket], dataPacketSize);
 
-  send = timer.every(1e3, sendDataPacket);
+  if (failedSends == 10){
+    radio.sleep();
+    esp_deep_sleep(24 * 3600 * 1000 * 1000);
+    throw("Restarting...");
+  }
+
+  send = timer.every(PACKET_RETRY_RATE, sendDataPacket);
+  failedSends++;
 
   DEBUG_PRINT("Packet sent.");
 
@@ -228,13 +241,13 @@ void sendPacket(Packet& packet, size_t packetLength) {
 
   radio.transmit((uint8_t*)&packet, packetLength);
 
-  sentCount++;
-
   radio.setPacketReceivedAction(onRecieve);
   radio.startReceive();
 }
 
 void onRecieve() {
+  DEBUG_PRINT("In interrupt!");
+
   switch (radio.getPacketLength(true)) {
   case eventPacketSize:
     break;
@@ -245,16 +258,12 @@ void onRecieve() {
 
   DEBUG_PRINT("Recieved packet size good.");
 
-  radio.readData((uint8_t*)&rcvdPacket.id, sizeof(rcvdPacket.id));
+  radio.readData((uint8_t*)&rcvdPacket, eventPacketSize);
 
   if (rcvdPacket.id != MONITOR_ID) return;
 
   DEBUG_PRINT("Recieved packet is for node.");
 
-  radio.readData(
-    (uint8_t*)&rcvdPacket.tag, 
-    eventPacketSize - sizeof(rcvdPacket.id)
-  );
   memcpy(encryptedEventData, rcvdPacket.type.encrypted, sizeof(EventPacket));
 
   crypto.decrypt(
@@ -287,6 +296,9 @@ void onRecieve() {
     case EventCode::DATA_RECVED:
       DEBUG_PRINT("Gateway acknowledged.");
 
+      timer.cancel(send);
+      send = timer.every(PACKET_SEND_RATE, sendDataPacket);
+
       memset(
         &packetBuffer[currentPacket].type.encrypted, 
         0, 
@@ -294,9 +306,7 @@ void onRecieve() {
       );
 
       currentPacket ^= 1;
-
-      timer.cancel(send);
-      send = timer.every(10e3, sendDataPacket);
+      failedSends = 0;
     
       break;
     case EventCode::NODE_ONLINE:
@@ -308,6 +318,8 @@ void onRecieve() {
     default:
       return;
   }
+
+  radio.sleep();
 }
 
 void displayError(const char* err){
