@@ -28,7 +28,7 @@ Author(s):
 #include <include/Pins.h>
 
 // STL Includes
-#include <list>    // Front/Back optimized lists
+#include <queue>    // FILO optimized lists
 
 // ESP32 Includes
 #include <esp_bt.h>
@@ -39,6 +39,7 @@ Author(s):
 #include <ChaChaPoly.h>
 #include <heltec_unofficial.h>
 #include <include/SHT31.hpp>
+#include <include/RotaryArray.hpp>
 
 #define PACKET_BUFFER_SIZE 2
 #define PACKET_SEND_RATE   60000 // in ms
@@ -46,7 +47,8 @@ Author(s):
 
 typedef Adafruit_BMP3XX BMP390;
 
-Packet packetBuffer[PACKET_BUFFER_SIZE];
+DataPacket latestData;
+Packet     packetBuffer[PACKET_BUFFER_SIZE];
 
 size_t currentPacket = 0;
 
@@ -56,15 +58,14 @@ uint8_t failedSends = 0;
 
 Timer<6, millis> timer;
 
-Timer<1, millis>::Task send;
+Timer<1, millis>::Task resend;
 
 TwoWire externI2C = TwoWire(0x01);
 
 SHT31  sht31   = SHT31(&externI2C);
 BMP390 bmp390  = BMP390();
 
-uint16_t audioBuffer[32] = {0};
-uint8_t  audioBufferSize = 0;
+RotaryArray<uint16_t, 32> audioSamples;
 
 // Global variables for recieve callback
 uint8_t  encryptedEventData[sizeof(EventPacket)];
@@ -94,7 +95,7 @@ void setup() {
   // If no errors then turn off the display 
   display.displayOff();
 
-  send = timer.every(PACKET_SEND_RATE, sendDataPacket);
+  timer.in(PACKET_SEND_RATE, sendDataPacket);
 
   // Sensor read callbacks
   timer.every(5000, updateFromSHT31);
@@ -145,45 +146,35 @@ bool initPeripherals() {
 }
 
 bool updateFromSHT31(void* cbData) {
-  DataPacket& data = packetBuffer[currentPacket].type.data;
-
-  sht31.readBoth(data.hive_temp, data.humidity);
+  sht31.readBoth(
+    latestData.hive_temp, 
+    latestData.humidity
+  );
 
   return true;
 }
 
 bool updateFromBMP390(void* cbData) {
-  DataPacket& data = packetBuffer[currentPacket].type.data;
-
   bmp390.performReading();
   
-  data.extern_temp = bmp390.temperature   + 0.5; // Round temperature
-  data.pressure    = bmp390.pressure /100 + 0.5; // Pa to mbar and rounding
+  // + 0.5 for rounding with integer conversion
+  latestData.extern_temp = bmp390.temperature   + 0.5;
+  latestData.pressure    = bmp390.pressure /100 + 0.5; // Pa to mbar
 
   return true;
 }
 
 bool updateSound(void* cbData) {
-  DataPacket& data = packetBuffer[currentPacket].type.data;
-  data.acoustics = 0;
+  latestData.acoustics = 0;
 
   digitalWrite(SOUND_VCC, HIGH);
   delay(49);
   
-  switch (audioBufferSize){
-  case (31):
-    memmove(&audioBuffer[0], &audioBuffer[1], 31*sizeof(uint16_t));
-    break;
-  default:
-    audioBufferSize++;
-    break;
+  audioSamples.push(analogRead(SOUND_ADC));
+  for (uint8_t index = 1; index < audioSamples.size(); ++index){
+    latestData.acoustics += abs(audioSamples[index - 1] - audioSamples[index]);
   }
-
-  audioBuffer[audioBufferSize - 1] = analogRead(SOUND_ADC);
-  for (uint8_t index = 1; index < audioBufferSize; ++index){
-    data.acoustics += abs(audioBuffer[index - 1] - audioBuffer[index]);
-  }
-  data.acoustics /= audioBufferSize + 1;
+  latestData.acoustics /= audioSamples.size();
 
   digitalWrite(SOUND_VCC, LOW);
 
@@ -191,13 +182,11 @@ bool updateSound(void* cbData) {
 }
 
 bool printData(void* cbData) {
-  DataPacket& data = packetBuffer[currentPacket].type.data;
-
-  Serial.printf("Hive temperature is %i\n",    data.hive_temp);
-  Serial.printf("Outside temperature is %i\n", data.extern_temp);
-  Serial.printf("Humidity is %u\n",            data.humidity);
-  Serial.printf("Pressure is %u\n",            data.pressure);
-  Serial.printf("Sound level is %u\n",         data.acoustics);
+  Serial.printf("Hive temperature is %i\n",    latestData.hive_temp);
+  Serial.printf("Outside temperature is %i\n", latestData.extern_temp);
+  Serial.printf("Humidity is %u\n",            latestData.humidity);
+  Serial.printf("Pressure is %u\n",            latestData.pressure);
+  Serial.printf("Sound level is %u\n",         latestData.acoustics);
 
   return true;
 }
@@ -205,44 +194,58 @@ bool printData(void* cbData) {
 void sendEventPacket(EventCode event) {
   Packet packet;
 
-  packet.id                   = MONITOR_ID;
-  packet.type.event.eventCode = event;
+  packet.id              = MONITOR_ID;
+  packet.event.eventCode = event;
 
   sendPacket(packet, eventPacketSize);
 }
 
 bool sendDataPacket(void* cbData) {
+  memcpy(&packetBuffer[currentPacket].data, &latestData, sizeof(DataPacket));
+
+  encryptPacket(packetBuffer[currentPacket], dataPacketSize);
   sendPacket(packetBuffer[currentPacket], dataPacketSize);
 
-  if (failedSends == 10){
-    radio.sleep();
-    esp_deep_sleep(24 * 3600 * 1000 * 1000);
-    throw("Restarting...");
-  }
-
-  send = timer.every(PACKET_RETRY_RATE, sendDataPacket);
-  failedSends++;
+  resend = timer.every(PACKET_RETRY_RATE, resendDataPacket);
 
   DEBUG_PRINT("Packet sent.");
 
   return false;
 }
 
+bool resendDataPacket(void* cbData) {
+  failedSends++;
+
+  sendPacket(packetBuffer[currentPacket], dataPacketSize);
+
+  if (failedSends == 10){
+    radio.sleep();
+    esp_deep_sleep(24u * 3600u * 1000u * 1000u);
+    throw("Restarting...");
+  }
+
+  DEBUG_PRINT("Packet re-sent.");
+
+  return true;
+}
+
 void sendPacket(Packet& packet, size_t packetLength) {
   radio.clearPacketReceivedAction();
-
-  crypto.encrypt(
-    packet.type.encrypted,
-    (uint8_t*)&packet.type,
-    packetLength - idSize - tagSize
-  );
-
-  crypto.computeTag(&packet.tag, tagSize);
 
   radio.transmit((uint8_t*)&packet, packetLength);
 
   radio.setPacketReceivedAction(onRecieve);
   radio.startReceive();
+}
+
+void encryptPacket(Packet& packet, size_t packetLength){
+  crypto.encrypt(
+    packet.raw,
+    (uint8_t*)&packet.raw,
+    packetLength - idSize - tagSize
+  );
+
+  crypto.computeTag(&packet.tag, tagSize);
 }
 
 void onRecieve() {
@@ -264,10 +267,10 @@ void onRecieve() {
 
   DEBUG_PRINT("Recieved packet is for node.");
 
-  memcpy(encryptedEventData, rcvdPacket.type.encrypted, sizeof(EventPacket));
+  memcpy(encryptedEventData, rcvdPacket.raw, sizeof(EventPacket));
 
   crypto.decrypt(
-    (uint8_t*)&rcvdPacket.type,
+    (uint8_t*)&rcvdPacket.event,
     encryptedEventData,
     sizeof(EventPacket)
   );
@@ -279,7 +282,7 @@ void onRecieve() {
     if (!newCrypt.setIV(encryption.iv, 8))    throw("Could not set IV");
 
     newCrypt.decrypt(
-      (uint8_t*)&rcvdPacket.type,
+      (uint8_t*)&rcvdPacket.event,
       encryptedEventData,
       sizeof(EventPacket)
     );
@@ -292,18 +295,12 @@ void onRecieve() {
     }
   }
 
-  switch (rcvdPacket.type.event.eventCode) {
+  switch (rcvdPacket.event.eventCode) {
     case EventCode::DATA_RECVED:
       DEBUG_PRINT("Gateway acknowledged.");
 
-      timer.cancel(send);
-      send = timer.every(PACKET_SEND_RATE, sendDataPacket);
-
-      memset(
-        &packetBuffer[currentPacket].type.encrypted, 
-        0, 
-        sizeof(DataPacket)
-      );
+      timer.cancel(resend);
+      timer.in(PACKET_SEND_RATE, sendDataPacket);
 
       currentPacket ^= 1;
       failedSends = 0;

@@ -35,8 +35,8 @@ typedef struct Packet {
   union {
     DataPacket   data = {0};
     EventPacket  event;
-    uint8_t      encrypted[sizeof(DataPacket)];
-  } type;
+    uint8_t      raw[sizeof(DataPacket)];
+  };
 } Packet;
 #pragma pack(pop)
 
