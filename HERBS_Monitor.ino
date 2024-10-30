@@ -39,7 +39,7 @@ Author(s):
 #include <ChaChaPoly.h>
 #include <heltec_unofficial.h>
 #include <include/SHT31.hpp>
-#include <include/RotaryArray.hpp>
+#include <include/CircularArray.hpp>
 
 #define PACKET_BUFFER_SIZE 2
 #define PACKET_SEND_RATE   60000 // in ms
@@ -52,7 +52,8 @@ Packet     packetBuffer[PACKET_BUFFER_SIZE];
 
 size_t currentPacket = 0;
 
-ChaChaPoly crypto = ChaChaPoly();
+ChaChaPoly baseCrypto = ChaChaPoly();
+ChaChaPoly crypto;
 
 uint8_t failedSends = 0;
 
@@ -65,7 +66,7 @@ TwoWire externI2C = TwoWire(0x01);
 SHT31  sht31   = SHT31(&externI2C);
 BMP390 bmp390  = BMP390();
 
-RotaryArray<uint16_t, 32> audioSamples;
+CircularArray<uint16_t, 32> audioSamples;
 
 // Global variables for recieve callback
 uint8_t  encryptedEventData[sizeof(EventPacket)];
@@ -85,8 +86,12 @@ void setup() {
   display.clear();
 
   // Init encryption
-  if (!crypto.setKey(encryption.key, 16)) return displayError("Could not set key!");
-  if (!crypto.setIV(encryption.iv, 8))    return displayError("Could not set IV!");
+  if (!baseCrypto.setKey(encryption.key, 16))
+    return displayError("Could not set key!");
+  if (!baseCrypto.setIV(encryption.iv, 8))
+    return displayError("Could not set IV!");
+
+  crypto = ChaChaPoly(baseCrypto);
 
   // Init functions
   if (!initLoRa())        return displayError("LoRa init failed!");
@@ -197,6 +202,7 @@ void sendEventPacket(EventCode event) {
   packet.id              = MONITOR_ID;
   packet.event.eventCode = event;
 
+  encryptPacket(packet, eventPacketSize);
   sendPacket(packet, eventPacketSize);
 }
 
@@ -214,15 +220,13 @@ bool sendDataPacket(void* cbData) {
 }
 
 bool resendDataPacket(void* cbData) {
-  failedSends++;
-
-  sendPacket(packetBuffer[currentPacket], dataPacketSize);
-
-  if (failedSends == 10){
+  if (++failedSends == 10){
     radio.sleep();
     esp_deep_sleep(24u * 3600u * 1000u * 1000u);
     throw("Restarting...");
   }
+
+  sendPacket(packetBuffer[currentPacket], dataPacketSize);
 
   DEBUG_PRINT("Packet re-sent.");
 
@@ -278,8 +282,7 @@ void onRecieve() {
   ChaChaPoly newCrypt;
 
   if (!crypto.checkTag(&rcvdPacket.tag, tagSize)) {
-    if (!newCrypt.setKey(encryption.key, 16)) throw("Could not set key");
-    if (!newCrypt.setIV(encryption.iv, 8))    throw("Could not set IV");
+    newCrypt = ChaChaPoly(baseCrypto);
 
     newCrypt.decrypt(
       (uint8_t*)&rcvdPacket.event,
