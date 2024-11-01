@@ -31,6 +31,7 @@ Author(s):
 #include <queue>    // FILO optimized lists
 
 // ESP32 Includes
+#include <driver/gpio.h>
 #include <esp_bt.h>
 
 // External Includes
@@ -70,7 +71,9 @@ CircularArray<uint16_t, 32> audioSamples;
 
 // Global variables for recieve callback
 uint8_t  encryptedEventData[sizeof(EventPacket)];
-Packet   rcvdPacket;
+Packet   rcvdPacket = Packet();
+
+bool setLoRaStandby = false;
 
 void setup() {
   #if defined(DEBUG)
@@ -105,14 +108,15 @@ void setup() {
   // Sensor read callbacks
   timer.every(5000, updateFromSHT31);
   timer.every(5000, updateFromBMP390);
-  timer.every(4950, updateSound);
+  timer.every(2500, updateSound);
 
   #ifdef DEBUG
   timer.every(10e3, printData);
   #endif
 
+  // Light sleep configuration
   esp_sleep_enable_ulp_wakeup();
-  esp_sleep_enable_timer_wakeup(50000);
+  esp_sleep_enable_timer_wakeup(50 * 1000);
 
   sendEventPacket(EventCode::NODE_ONLINE);
 
@@ -121,6 +125,15 @@ void setup() {
 
 void loop() {
   timer.tick();
+
+  switch (setLoRaStandby) {
+  case true:
+    radio.sleep();
+    setLoRaStandby = false;
+  default:
+    break;
+  }
+
   esp_light_sleep_start();
 }
 
@@ -138,6 +151,10 @@ bool initLoRa() {
 }
 
 bool initPeripherals() {
+  pinMode(SOUND_VCC, OUTPUT);
+  pinMode(SOUND_ADC, INPUT);
+  analogRead(SOUND_ADC);
+
   externI2C.begin(I2C_SDA, I2C_SCL, 115200);
   externI2C.setBufferSize(10);
   
@@ -173,7 +190,7 @@ bool updateSound(void* cbData) {
   latestData.acoustics = 0;
 
   digitalWrite(SOUND_VCC, HIGH);
-  delay(49);
+  delay(500);
   
   audioSamples.push(analogRead(SOUND_ADC));
   for (uint8_t index = 1; index < audioSamples.size(); ++index){
@@ -214,7 +231,7 @@ bool sendDataPacket(void* cbData) {
 
   resend = timer.every(PACKET_RETRY_RATE, resendDataPacket);
 
-  DEBUG_PRINT("Packet sent.");
+  DEBUG_PRINT("Packet sent.\n");
 
   return false;
 }
@@ -223,12 +240,12 @@ bool resendDataPacket(void* cbData) {
   if (++failedSends == 10){
     radio.sleep();
     esp_deep_sleep(24u * 3600u * 1000u * 1000u);
-    throw("Restarting...");
+    throw "Restarting";
   }
 
   sendPacket(packetBuffer[currentPacket], dataPacketSize);
 
-  DEBUG_PRINT("Packet re-sent.");
+  DEBUG_PRINT("Packet re-sent.\n");
 
   return true;
 }
@@ -253,8 +270,6 @@ void encryptPacket(Packet& packet, size_t packetLength){
 }
 
 void onRecieve() {
-  DEBUG_PRINT("In interrupt!");
-
   switch (radio.getPacketLength(true)) {
   case eventPacketSize:
     break;
@@ -263,18 +278,14 @@ void onRecieve() {
     return;
   }
 
-  DEBUG_PRINT("Recieved packet size good.");
-
   radio.readData((uint8_t*)&rcvdPacket, eventPacketSize);
 
   if (rcvdPacket.id != MONITOR_ID) return;
 
-  DEBUG_PRINT("Recieved packet is for node.");
-
   memcpy(encryptedEventData, rcvdPacket.raw, sizeof(EventPacket));
 
   crypto.decrypt(
-    (uint8_t*)&rcvdPacket.event,
+    rcvdPacket.raw,
     encryptedEventData,
     sizeof(EventPacket)
   );
@@ -285,14 +296,12 @@ void onRecieve() {
     newCrypt = ChaChaPoly(baseCrypto);
 
     newCrypt.decrypt(
-      (uint8_t*)&rcvdPacket.event,
+      rcvdPacket.raw,
       encryptedEventData,
       sizeof(EventPacket)
     );
 
     if (!newCrypt.checkTag(&rcvdPacket.tag, tagSize)) {
-      DEBUG_PRINT("Event packet tag failed.\n");
-
       newCrypt.clear();
       return;
     }
@@ -300,8 +309,6 @@ void onRecieve() {
 
   switch (rcvdPacket.event.eventCode) {
     case EventCode::DATA_RECVED:
-      DEBUG_PRINT("Gateway acknowledged.");
-
       timer.cancel(resend);
       timer.in(PACKET_SEND_RATE, sendDataPacket);
 
@@ -310,8 +317,8 @@ void onRecieve() {
     
       break;
     case EventCode::NODE_ONLINE:
-      DEBUG_PRINT("Gateway back online.");
-
+      timer.cancel(resend);
+      timer.in(PACKET_SEND_RATE, sendDataPacket);
       crypto = newCrypt;
 
       break;
@@ -319,7 +326,7 @@ void onRecieve() {
       return;
   }
 
-  radio.sleep();
+  setLoRaStandby = true;
 }
 
 void displayError(const char* err){
