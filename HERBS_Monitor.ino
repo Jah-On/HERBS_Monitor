@@ -151,6 +151,8 @@ bool initLoRa() {
 }
 
 bool initPeripherals() {
+  pinMode(USER_LED, OUTPUT);
+
   pinMode(SOUND_VCC, OUTPUT);
   pinMode(SOUND_ADC, INPUT);
   analogRead(SOUND_ADC);
@@ -251,6 +253,9 @@ bool resendDataPacket(void* cbData) {
 }
 
 void sendPacket(Packet& packet, size_t packetLength) {
+  digitalWrite(USER_LED, HIGH);
+  timer.in(300, turnOffLED);
+
   radio.clearPacketReceivedAction();
 
   radio.transmit((uint8_t*)&packet, packetLength);
@@ -327,6 +332,12 @@ void onRecieve() {
   }
 
   setLoRaStandby = true;
+}
+
+bool turnOffLED(void* cbData){
+  digitalWrite(USER_LED, LOW);
+
+  return false;
 }
 
 void displayError(const char* err){
