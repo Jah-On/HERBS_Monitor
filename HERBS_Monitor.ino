@@ -207,7 +207,7 @@ bool updateSound(void* cbData) {
 }
 
 bool readBattery(void* cbData) {
-  heltec_battery_percent(heltec_vbat());
+   latestData.battery = heltec_battery_percent(heltec_vbat());
 
   return true;
 }
