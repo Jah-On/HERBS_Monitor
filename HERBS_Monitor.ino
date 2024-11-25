@@ -58,7 +58,7 @@ ChaChaPoly crypto;
 
 uint8_t failedSends = 0;
 
-Timer<6, millis> timer;
+Timer<8, millis> timer;
 
 Timer<1, millis>::Task resend;
 
@@ -106,9 +106,10 @@ void setup() {
   timer.in(PACKET_SEND_RATE, sendDataPacket);
 
   // Sensor read callbacks
-  timer.every(5000, updateFromSHT31);
-  timer.every(5000, updateFromBMP390);
-  timer.every(2500, updateSound);
+  timer.every(10e3, updateFromSHT31);
+  timer.every( 5e3, updateFromSHT31);
+  timer.every( 5e3, updateFromBMP390);
+  timer.every(45e2, updateSound);
 
   #ifdef DEBUG
   timer.every(10e3, printData);
@@ -116,7 +117,7 @@ void setup() {
 
   // Light sleep configuration
   esp_sleep_enable_ulp_wakeup();
-  esp_sleep_enable_timer_wakeup(50 * 1000);
+  esp_sleep_enable_timer_wakeup(50e3);
 
   sendEventPacket(EventCode::NODE_ONLINE);
 
@@ -140,9 +141,9 @@ void loop() {
 bool initLoRa() {
   bool res = radio.begin(
     LORA_FREQUENCY_US,
-    LORA_BANDWIDTH_20_8,
-    LORA_SPREADING_FACTOR_5,
-    LORA_CODING_RATE_4_5,
+    LORA_BANDWIDTH_125,
+    LORA_SPREADING_FACTOR_9,
+    LORA_CODING_RATE_4_8,
     0x12,
     22
   );
@@ -201,6 +202,12 @@ bool updateSound(void* cbData) {
   latestData.acoustics /= audioSamples.size();
 
   digitalWrite(SOUND_VCC, LOW);
+
+  return true;
+}
+
+bool readBattery(void* cbData) {
+  heltec_battery_percent(heltec_vbat());
 
   return true;
 }
