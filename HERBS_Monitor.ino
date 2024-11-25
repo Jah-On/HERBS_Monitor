@@ -106,10 +106,11 @@ void setup() {
   timer.in(PACKET_SEND_RATE, sendDataPacket);
 
   // Sensor read callbacks
-  timer.every(10e3, updateFromSHT31);
+  timer.every(10e3, readBattery);
   timer.every( 5e3, updateFromSHT31);
   timer.every( 5e3, updateFromBMP390);
   timer.every(45e2, updateSound);
+  
 
   #ifdef DEBUG
   timer.every(10e3, printData);
@@ -153,6 +154,8 @@ bool initLoRa() {
 
 bool initPeripherals() {
   pinMode(USER_LED, OUTPUT);
+
+  pinMode(VBAT_ADC, INPUT);
 
   pinMode(SOUND_VCC, OUTPUT);
   pinMode(SOUND_ADC, INPUT);
