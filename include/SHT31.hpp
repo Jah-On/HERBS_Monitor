@@ -12,13 +12,13 @@ concept NUMBER = (std::is_integral_v<X> || std::is_floating_point_v<X>);
 class SHT31 {
 private:
   // Static members
-  static constexpr uint16_t MEAS_HIG         = 0x2400;
-  static constexpr uint16_t MEAS_HIG_STRECTH = 0x2C06;
-  static constexpr uint16_t MEAS_MED         = 0x240B;
-  static constexpr uint16_t MEAS_MED_STRECTH = 0x2C0D;
-  static constexpr uint16_t MEAS_LOW         = 0x2416;
-  static constexpr uint16_t MEAS_LOW_STRECTH = 0x2C10;
-  static constexpr uint16_t SOFT_RESET       = 0x30A2;
+  static constexpr uint8_t MEAS_HIG[2]         = {0x24, 0x00};
+  static constexpr uint8_t MEAS_HIG_STRECTH[2] = {0x2C, 0x06};
+  static constexpr uint8_t MEAS_MED[2]         = {0x24, 0x0B};
+  static constexpr uint8_t MEAS_MED_STRECTH[2] = {0x2C, 0x0D};
+  static constexpr uint8_t MEAS_LOW[2]         = {0x24, 0x16};
+  static constexpr uint8_t MEAS_LOW_STRECTH[2] = {0x2C, 0x10};
+  static constexpr uint8_t SOFT_RESET[2]       = {0x30, 0xA2};
 
   uint8_t  buffer[6];
   TwoWire* wireHandle;
@@ -27,7 +27,7 @@ private:
   double   humidity    = NAN;
 
   bool    sensorRead();
-  void    writeCommand(uint16_t CMD);
+  void    writeCommand(const uint8_t command[2]);
 
 public:
   SHT31(TwoWire* handle = &Wire);

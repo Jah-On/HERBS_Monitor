@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include <include/SHT31.hpp>
 
 bool SHT31::sensorRead(){
@@ -27,11 +28,11 @@ bool SHT31::sensorRead(){
   return true;
 }
 
-void SHT31::writeCommand(uint16_t command){
+void SHT31::writeCommand(const uint8_t command[2]){
   wireHandle->beginTransmission(i2cAddress);
 
-  wireHandle->write(command >> 0x08);
-  wireHandle->write(command &  0xFF);
+  wireHandle->write(command[1]);
+  wireHandle->write(command[0]);
 
   wireHandle->endTransmission();
 }
@@ -62,8 +63,8 @@ double SHT31::readHumidity(){
 template<NUMBER T, NUMBER H>
 void SHT31::readBoth(T& t, H& h){
   if (!sensorRead()){
-    t = UINT8_MAX;
-    h = UINT8_MAX;
+    t = -128;
+    h = -1;
     return;
   }
 

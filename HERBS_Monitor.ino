@@ -42,9 +42,14 @@ Author(s):
 #include <include/SHT31.hpp>
 #include <include/CircularArray.hpp>
 
+#define MINUTE_US  6e7
+#define HOUR_US   36e8
+
 #define PACKET_BUFFER_SIZE 2
 #define PACKET_SEND_RATE   60000 // in ms
 #define PACKET_RETRY_RATE  60000 // in ms
+
+#define REDUCED_RATE_MULTIPLE 5
 
 typedef Adafruit_BMP3XX BMP390;
 
@@ -67,7 +72,7 @@ TwoWire externI2C = TwoWire(0x01);
 SHT31  sht31   = SHT31(&externI2C);
 BMP390 bmp390  = BMP390();
 
-CircularArray<uint16_t, 32> audioSamples;
+CircularArray<uint16_t, 128> audioSamples;
 
 // Global variables for recieve callback
 uint8_t  encryptedEventData[sizeof(EventPacket)];
@@ -75,10 +80,17 @@ Packet   rcvdPacket = Packet();
 
 bool setLoRaStandby = false;
 
+size_t send_rate   = PACKET_SEND_RATE;
+size_t resend_rate = PACKET_RETRY_RATE;
+
 void setup() {
   #if defined(DEBUG)
   Serial.begin(115200);
   #endif
+
+  if (!initPeripherals()) return displayError("Peripheral init \nfailed!");
+
+  checkBatteryLevel();
 
   for (Packet& packet : packetBuffer) packet.id = MONITOR_ID;
 
@@ -98,7 +110,6 @@ void setup() {
 
   // Init functions
   if (!initLoRa())        return displayError("LoRa init failed!");
-  if (!initPeripherals()) return displayError("Peripheral init \nfailed!");
 
   // If no errors then turn off the display 
   display.displayOff();
@@ -106,12 +117,10 @@ void setup() {
   timer.in(PACKET_SEND_RATE, sendDataPacket);
 
   // Sensor read callbacks
-  timer.every(10e3, readBattery);
   timer.every( 5e3, updateFromSHT31);
   timer.every( 5e3, updateFromBMP390);
-  timer.every(45e2, updateSound);
+  timer.every(36e5, updateSound);
   
-
   #ifdef DEBUG
   timer.every(10e3, printData);
   #endif
@@ -155,13 +164,16 @@ bool initLoRa() {
 bool initPeripherals() {
   pinMode(USER_LED, OUTPUT);
 
+  digitalWrite(VBAT_CTRL, HIGH);
   pinMode(VBAT_ADC, INPUT);
 
   pinMode(SOUND_VCC, OUTPUT);
   pinMode(SOUND_ADC, INPUT);
+  digitalWrite(SOUND_VCC, LOW);
   analogRead(SOUND_ADC);
 
-  externI2C.begin(I2C_SDA, I2C_SCL, 115200);
+  // Targeting sub 10ms transaction times
+  externI2C.begin(I2C_SDA, I2C_SCL, 12800);
   externI2C.setBufferSize(10);
   
   sht31.begin();
@@ -196,10 +208,12 @@ bool updateSound(void* cbData) {
   latestData.acoustics = 0;
 
   digitalWrite(SOUND_VCC, HIGH);
-  delay(500);
+  delay(590);
   
   audioSamples.push(analogRead(SOUND_ADC));
   for (uint8_t index = 1; index < audioSamples.size(); ++index){
+    for (uint8_t i = 0; i < 220; ++i) esp_light_sleep_start();
+    audioSamples.push(analogRead(SOUND_ADC));
     latestData.acoustics += abs(audioSamples[index - 1] - audioSamples[index]);
   }
   latestData.acoustics /= audioSamples.size();
@@ -209,8 +223,33 @@ bool updateSound(void* cbData) {
   return true;
 }
 
-bool readBattery(void* cbData) {
-   latestData.battery = heltec_battery_percent(heltec_vbat());
+bool checkBatteryLevel() {
+  latestData.battery = heltec_battery_percent();
+
+  switch (latestData.battery) {
+  case 0 ... 4:
+    radio.sleep();
+
+    digitalWrite(SOUND_VCC, LOW);
+
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RC_FAST,    ESP_PD_OPTION_OFF);
+    esp_sleep_pd_config(ESP_PD_DOMAIN_XTAL,       ESP_PD_OPTION_OFF);
+
+    esp_deep_sleep(HOUR_US);
+
+    break;
+  case 5 ... 9:
+    send_rate   = PACKET_SEND_RATE  * REDUCED_RATE_MULTIPLE;
+    resend_rate = PACKET_RETRY_RATE * REDUCED_RATE_MULTIPLE;
+
+    break;
+  default:
+    send_rate   = PACKET_SEND_RATE;
+    resend_rate = PACKET_RETRY_RATE;
+    
+    break;
+  }
 
   return true;
 }
@@ -241,7 +280,7 @@ bool sendDataPacket(void* cbData) {
   encryptPacket(packetBuffer[currentPacket], dataPacketSize);
   sendPacket(packetBuffer[currentPacket], dataPacketSize);
 
-  resend = timer.every(PACKET_RETRY_RATE, resendDataPacket);
+  resend = timer.every(resend_rate, resendDataPacket);
 
   DEBUG_PRINT("Packet sent.\n");
 
@@ -251,7 +290,7 @@ bool sendDataPacket(void* cbData) {
 bool resendDataPacket(void* cbData) {
   if (++failedSends == 10){
     radio.sleep();
-    esp_deep_sleep(24u * 3600u * 1000u * 1000u);
+    esp_deep_sleep(24u * HOUR_US);
     throw "Restarting";
   }
 
@@ -325,7 +364,7 @@ void onRecieve() {
   switch (rcvdPacket.event.eventCode) {
     case EventCode::DATA_RECVED:
       timer.cancel(resend);
-      timer.in(PACKET_SEND_RATE, sendDataPacket);
+      timer.in(send_rate, sendDataPacket);
 
       currentPacket ^= 1;
       failedSends = 0;
@@ -333,7 +372,7 @@ void onRecieve() {
       break;
     case EventCode::NODE_ONLINE:
       timer.cancel(resend);
-      timer.in(PACKET_SEND_RATE, sendDataPacket);
+      timer.in(send_rate, sendDataPacket);
       crypto = newCrypt;
 
       break;
