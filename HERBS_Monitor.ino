@@ -135,6 +135,7 @@ void setup() {
 }
 
 void loop() {
+  checkBatteryLevel();
   timer.tick();
 
   switch (setLoRaStandby) {
