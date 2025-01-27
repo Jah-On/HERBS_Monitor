@@ -13,7 +13,12 @@ typedef enum class SHT31_Error_Codes {
   NONE = 0,
   BUFFER_NOT_FILLED,
   TEMP_CRC_FAILED,
-  HUMD_CRC_FAILED
+  HUMD_CRC_FAILED,
+  DATA_EXCEEDS_BUFFER,
+  ADDR_NACKED,
+  DATA_NACKED,
+  UNKNOWN_TWI_ERROR,
+  TWI_TIMED_OUT
 } SHT31_Error_Codes;
 
 class SHT31 {
@@ -34,7 +39,7 @@ private:
   double   humidity    = NAN;
 
   SHT31_Error_Codes    sensorRead();
-  void                 writeCommand(const uint8_t command[2]);
+  SHT31_Error_Codes    writeCommand(const uint8_t command[2]);
 
 public:
   SHT31(TwoWire* handle = &Wire);

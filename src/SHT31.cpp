@@ -3,7 +3,14 @@
 #include <include/SHT31.hpp>
 
 SHT31_Error_Codes SHT31::sensorRead(){
-  writeCommand(MEAS_HIG);
+  SHT31_Error_Codes result = writeCommand(MEAS_HIG);
+
+  switch (result) {
+  case SHT31_Error_Codes::NONE:
+    break;
+  default:
+    return result;
+  }
 
   delay(40);
 
@@ -32,13 +39,26 @@ SHT31_Error_Codes SHT31::sensorRead(){
   return SHT31_Error_Codes::NONE;
 }
 
-void SHT31::writeCommand(const uint8_t command[2]){
+SHT31_Error_Codes SHT31::writeCommand(const uint8_t command[2]){
   wireHandle->beginTransmission(i2cAddress);
 
   wireHandle->write(command[1]);
   wireHandle->write(command[0]);
 
-  wireHandle->endTransmission();
+  switch (wireHandle->endTransmission()){
+  case 1:
+    return SHT31_Error_Codes::DATA_EXCEEDS_BUFFER;
+  case 2:
+    return SHT31_Error_Codes::ADDR_NACKED;
+  case 3:
+    return SHT31_Error_Codes::DATA_NACKED;
+  case 4:
+    return SHT31_Error_Codes::UNKNOWN_TWI_ERROR;
+  case 5:
+    return SHT31_Error_Codes::TWI_TIMED_OUT;
+  default:
+    return SHT31_Error_Codes::NONE;
+  }
 }
 
 /***************** PUBLIC FUNCTIONS ****************/

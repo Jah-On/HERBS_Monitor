@@ -170,6 +170,21 @@ bool updateFromI2C(void* cbData){
   );
 
   switch (err) {
+  case SHT31_Error_Codes::DATA_EXCEEDS_BUFFER:
+    DEBUG_PRINT("I2C data write exceeds buffer!");
+    break;
+  case SHT31_Error_Codes::ADDR_NACKED:
+    DEBUG_PRINT("Address was nacked!");
+    break;
+  case SHT31_Error_Codes::DATA_NACKED:
+    DEBUG_PRINT("Data was nacked!");
+    break;
+  case SHT31_Error_Codes::UNKNOWN_TWI_ERROR:
+    DEBUG_PRINT("Unknown I2C error!");
+    break;
+  case SHT31_Error_Codes::TWI_TIMED_OUT:
+    DEBUG_PRINT("I2C timed out; likely a disconnection!");
+    break;
   case SHT31_Error_Codes::BUFFER_NOT_FILLED:
     DEBUG_PRINT("I2C buffer did not get all the data!");
     break;
