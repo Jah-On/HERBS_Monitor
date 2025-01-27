@@ -138,8 +138,14 @@ bool initPeripherals() {
   heltec_setup();
 
   display.end();
+  Wire.end();
+  
   if (!Wire.setPins(I2C_SDA, I2C_SCL)){
     DEBUG_PRINT("Failed to switch primary I2C pins!");
+    return false;
+  }
+  if (!Wire.begin()){
+    DEBUG_PRINT("Failed to start primary I2C bus!");
     return false;
   }
   Wire.setBufferSize(10);
