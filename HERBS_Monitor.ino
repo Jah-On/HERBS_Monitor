@@ -7,7 +7,7 @@ Author(s):
 
 // Comment out for actual use to save energy
 // Otherwise it will print useful info over serial
-// #define DEBUG
+#define DEBUG
 
 #ifdef DEBUG
   #define DEBUG_PRINT(...) Serial.printf(__VA_ARGS__)
@@ -18,9 +18,6 @@ Author(s):
 // HERBS Data Types
 #include <include/Herbs.h>
 
-// Include keys
-#include <include/Secrets.h>
-
 // LoRa constants
 #include <include/LoRa.h>
 
@@ -28,11 +25,7 @@ Author(s):
 #include <include/Pins.h>
 
 // STL Includes
-#include <queue>    // FILO optimized lists
-
-// ESP32 Includes
-#include <driver/gpio.h>
-#include <esp_bt.h>
+#include <deque> // FIFO optimized lists
 
 // External Includes
 #include <Adafruit_BMP3XX.h>
@@ -46,8 +39,8 @@ Author(s):
 #define HOUR_US   36e8
 
 #define PACKET_BUFFER_SIZE 2
-#define PACKET_SEND_RATE   60000 // in ms
-#define PACKET_RETRY_RATE  60000 // in ms
+#define PACKET_SEND_RATE   300e3 // in ms
+#define PACKET_RETRY_RATE  300e3 // in ms
 
 #define REDUCED_RATE_MULTIPLE 5
 
@@ -74,53 +67,38 @@ BMP390 bmp390  = BMP390();
 
 CircularArray<uint16_t, 128> audioSamples;
 
-// Global variables for recieve callback
-uint8_t  encryptedEventData[sizeof(EventPacket)];
-Packet   rcvdPacket = Packet();
-
-bool setLoRaStandby = false;
+// Global variables for recieved packets
+uint8_t            encryptedEventData;
+std::deque<Packet> recievedPackets;
 
 size_t send_rate   = PACKET_SEND_RATE;
 size_t resend_rate = PACKET_RETRY_RATE;
 
 void setup() {
-  #if defined(DEBUG)
   Serial.begin(115200);
-  #endif
-
-  if (!initPeripherals()) return displayError("Peripheral init \nfailed!");
+  
+  if (!initPeripherals()) return initError("Peripheral init failed!");
 
   checkBatteryLevel();
 
-  for (Packet& packet : packetBuffer) packet.id = MONITOR_ID;
-
-  heltec_setup();
-
-  // Setup display
-  display.setFont(ArialMT_Plain_16);
-  display.clear();
-
   // Init encryption
   if (!baseCrypto.setKey(encryption.key, 16))
-    return displayError("Could not set key!");
+    return initError("Could not set key!");
   if (!baseCrypto.setIV(encryption.iv, 8))
-    return displayError("Could not set IV!");
+    return initError("Could not set IV!");
 
   crypto = ChaChaPoly(baseCrypto);
 
   // Init functions
-  if (!initLoRa())        return displayError("LoRa init failed!");
+  if (!initLoRa())        return initError("LoRa init failed!");
 
-  // If no errors then turn off the display 
-  display.displayOff();
-
-  timer.in(PACKET_SEND_RATE, sendDataPacket);
+  timer.in(send_rate, sendDataPacket);
 
   // Sensor read callbacks
-  timer.every( 5e3, updateFromSHT31);
-  timer.every( 5e3, updateFromBMP390);
-  timer.every(36e5, updateSound);
+  timer.every(10e3, updateFromI2C);
   
+  turnOnSoundSensor(nullptr);
+
   #ifdef DEBUG
   timer.every(10e3, printData);
   #endif
@@ -136,15 +114,9 @@ void setup() {
 
 void loop() {
   checkBatteryLevel();
-  timer.tick();
+  processRecievedPackets();
 
-  switch (setLoRaStandby) {
-  case true:
-    radio.sleep();
-    setLoRaStandby = false;
-  default:
-    break;
-  }
+  timer.tick();
 
   esp_light_sleep_start();
 }
@@ -163,18 +135,20 @@ bool initLoRa() {
 }
 
 bool initPeripherals() {
+  heltec_setup();
+
   pinMode(USER_LED, OUTPUT);
 
-  digitalWrite(VBAT_CTRL, HIGH);
-  pinMode(VBAT_ADC, INPUT);
-
+  // Power
   pinMode(SOUND_VCC, OUTPUT);
-  pinMode(SOUND_ADC, INPUT);
+  pinMode(I2C_VCC,   OUTPUT);
   digitalWrite(SOUND_VCC, LOW);
+  digitalWrite(I2C_VCC,   HIGH);
+
+  pinMode(SOUND_ADC, INPUT);
   analogRead(SOUND_ADC);
 
-  // Targeting sub 10ms transaction times
-  externI2C.begin(I2C_SDA, I2C_SCL, 12800);
+  externI2C.begin(I2C_SDA, I2C_SCL, 100000);
   externI2C.setBufferSize(10);
   
   sht31.begin();
@@ -186,16 +160,12 @@ bool initPeripherals() {
   return true;
 }
 
-bool updateFromSHT31(void* cbData) {
+bool updateFromI2C(void* cbData){
   sht31.readBoth(
     latestData.hive_temp, 
     latestData.humidity
   );
 
-  return true;
-}
-
-bool updateFromBMP390(void* cbData) {
   bmp390.performReading();
   
   // + 0.5 for rounding with integer conversion
@@ -207,30 +177,30 @@ bool updateFromBMP390(void* cbData) {
 
 bool updateSound(void* cbData) {
   latestData.acoustics = 0;
-
-  digitalWrite(SOUND_VCC, HIGH);
-  delay(590);
   
   audioSamples.push(analogRead(SOUND_ADC));
-  for (uint8_t index = 1; index < audioSamples.size(); ++index){
-    for (uint8_t i = 0; i < 220; ++i) esp_light_sleep_start();
+  for (uint8_t index = 1; index < audioSamples.capacity(); ++index){
+    esp_light_sleep_start();
     audioSamples.push(analogRead(SOUND_ADC));
     latestData.acoustics += abs(audioSamples[index - 1] - audioSamples[index]);
   }
-  latestData.acoustics /= audioSamples.size();
+  latestData.acoustics /= audioSamples.capacity();
 
   digitalWrite(SOUND_VCC, LOW);
 
-  return true;
+  timer.in(3599500, turnOnSoundSensor);
+
+  return false;
 }
 
-bool checkBatteryLevel() {
+void checkBatteryLevel() {
   latestData.battery = heltec_battery_percent();
 
   switch (latestData.battery) {
-  case 0 ... 4:
+  case 0 ... 14:
     radio.sleep();
 
+    digitalWrite(I2C_VCC,   LOW);
     digitalWrite(SOUND_VCC, LOW);
 
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
@@ -239,23 +209,22 @@ bool checkBatteryLevel() {
 
     esp_deep_sleep(HOUR_US);
 
-    break;
-  case 5 ... 9:
+    throw "*** BATTERY CRITICALLY LOW ***";
+  case 15 ... 30:
     send_rate   = PACKET_SEND_RATE  * REDUCED_RATE_MULTIPLE;
     resend_rate = PACKET_RETRY_RATE * REDUCED_RATE_MULTIPLE;
 
-    break;
+    return;
   default:
     send_rate   = PACKET_SEND_RATE;
     resend_rate = PACKET_RETRY_RATE;
     
-    break;
+    return;
   }
-
-  return true;
 }
 
 bool printData(void* cbData) {
+  Serial.printf("Battery percent is %u\n",     latestData.battery);
   Serial.printf("Hive temperature is %i\n",    latestData.hive_temp);
   Serial.printf("Outside temperature is %i\n", latestData.extern_temp);
   Serial.printf("Humidity is %u\n",            latestData.humidity);
@@ -268,17 +237,16 @@ bool printData(void* cbData) {
 void sendEventPacket(EventCode event) {
   Packet packet;
 
-  packet.id              = MONITOR_ID;
   packet.event.eventCode = event;
 
-  encryptPacket(packet, eventPacketSize);
+  encryptPacket(packet, sizeof(EventPacket));
   sendPacket(packet, eventPacketSize);
 }
 
 bool sendDataPacket(void* cbData) {
   memcpy(&packetBuffer[currentPacket].data, &latestData, sizeof(DataPacket));
 
-  encryptPacket(packetBuffer[currentPacket], dataPacketSize);
+  encryptPacket(packetBuffer[currentPacket], sizeof(DataPacket));
   sendPacket(packetBuffer[currentPacket], dataPacketSize);
 
   resend = timer.every(resend_rate, resendDataPacket);
@@ -291,8 +259,8 @@ bool sendDataPacket(void* cbData) {
 bool resendDataPacket(void* cbData) {
   if (++failedSends == 10){
     radio.sleep();
-    esp_deep_sleep(24u * HOUR_US);
-    throw "Restarting";
+    esp_deep_sleep(HOUR_US);
+    throw "*** NO RESPONSE FROM GATEWAY ***";
   }
 
   sendPacket(packetBuffer[currentPacket], dataPacketSize);
@@ -303,6 +271,8 @@ bool resendDataPacket(void* cbData) {
 }
 
 void sendPacket(Packet& packet, size_t packetLength) {
+  radio.standby();
+  
   digitalWrite(USER_LED, HIGH);
   timer.in(300, turnOffLED);
 
@@ -314,11 +284,11 @@ void sendPacket(Packet& packet, size_t packetLength) {
   radio.startReceive();
 }
 
-void encryptPacket(Packet& packet, size_t packetLength){
+void encryptPacket(Packet& packet, size_t dataLength){
   crypto.encrypt(
     packet.raw,
     (uint8_t*)&packet.raw,
-    packetLength - idSize - tagSize
+    dataLength
   );
 
   crypto.computeTag(&packet.tag, tagSize);
@@ -329,59 +299,86 @@ void onRecieve() {
   case eventPacketSize:
     break;
   default:
-    radio.readData(encryptedEventData, 1);
+    radio.readData(&encryptedEventData, 1);
+    encryptedEventData = 0;
     return;
   }
 
-  radio.readData((uint8_t*)&rcvdPacket, eventPacketSize);
+  recievedPackets.emplace_back();
 
-  if (rcvdPacket.id != MONITOR_ID) return;
+  radio.readData((uint8_t*)&recievedPackets.back(), eventPacketSize);
 
-  memcpy(encryptedEventData, rcvdPacket.raw, sizeof(EventPacket));
+  if (recievedPackets.back().id != MONITOR_ID) return recievedPackets.pop_back();
+}
 
-  crypto.decrypt(
-    rcvdPacket.raw,
-    encryptedEventData,
-    sizeof(EventPacket)
-  );
+void processRecievedPackets(){
+  while (recievedPackets.size()) {
+    DEBUG_PRINT("Processing new packet...\n");
 
-  ChaChaPoly newCrypt;
+    Packet* packet = &recievedPackets.front();
 
-  if (!crypto.checkTag(&rcvdPacket.tag, tagSize)) {
-    newCrypt = ChaChaPoly(baseCrypto);
+    encryptedEventData = packet->raw[0];
 
-    newCrypt.decrypt(
-      rcvdPacket.raw,
-      encryptedEventData,
+    crypto.decrypt(
+      packet->raw,
+      &encryptedEventData,
       sizeof(EventPacket)
     );
 
-    if (!newCrypt.checkTag(&rcvdPacket.tag, tagSize)) {
-      newCrypt.clear();
-      return;
+    ChaChaPoly newCrypt;
+
+    if (!crypto.checkTag(&packet->tag, tagSize)) {
+      DEBUG_PRINT("Invalid tag; trying with reset counter.\n");
+
+      newCrypt = ChaChaPoly(baseCrypto);
+
+      newCrypt.decrypt(
+        packet->raw,
+        &encryptedEventData,
+        sizeof(EventPacket)
+      );
+
+      if (!newCrypt.checkTag(&packet->tag, tagSize)) {
+        newCrypt.clear();
+        DEBUG_PRINT("Invalid tag with reset counter; ignoring.\n");
+        return;
+      }
     }
+
+    switch (packet->event.eventCode) {
+      case EventCode::DATA_RECVED:
+        radio.sleep();
+
+        timer.cancel(resend);
+        timer.in(send_rate, sendDataPacket);
+
+        currentPacket ^= 1;
+        failedSends = 0;
+      
+        break;
+      case EventCode::NODE_ONLINE:
+        radio.sleep();
+
+        timer.cancel(resend);
+        timer.in(send_rate, sendDataPacket);
+
+        crypto = newCrypt;
+
+        break;
+      default:
+        return;
+    }
+
+    recievedPackets.pop_front();
   }
+}
 
-  switch (rcvdPacket.event.eventCode) {
-    case EventCode::DATA_RECVED:
-      timer.cancel(resend);
-      timer.in(send_rate, sendDataPacket);
+bool turnOnSoundSensor(void* cbData){
+  digitalWrite(SOUND_VCC, HIGH);
 
-      currentPacket ^= 1;
-      failedSends = 0;
-    
-      break;
-    case EventCode::NODE_ONLINE:
-      timer.cancel(resend);
-      timer.in(send_rate, sendDataPacket);
-      crypto = newCrypt;
+  timer.in(500, updateSound);
 
-      break;
-    default:
-      return;
-  }
-
-  setLoRaStandby = true;
+  return false;
 }
 
 bool turnOffLED(void* cbData){
@@ -390,7 +387,12 @@ bool turnOffLED(void* cbData){
   return false;
 }
 
-void displayError(const char* err){
-  display.println(err);
-  display.display();
+void initError(const char* err){
+  Serial.println(err);
+
+  delay(1000);
+
+  esp_deep_sleep(HOUR_US);
+
+  throw "*** INITIALIZATION ERROR ***";
 }

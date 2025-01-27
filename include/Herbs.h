@@ -1,10 +1,7 @@
 #ifndef HERBS_TYPES_H
 #define HERBS_TYPES_H
 
-typedef struct MonitorEncryption {
-  uint8_t key[17];
-  uint8_t iv[9];
-} MonitorEncryption;
+#include "Secrets.h"
 
 typedef enum class EventCode : uint8_t {
   NODE_ONLINE = 0,
@@ -31,7 +28,7 @@ const size_t eventPacketSize = idSize + tagSize + sizeof(EventPacket);
 
 #pragma pack(push, 1)
 typedef struct Packet {
-  uint64_t id;
+  uint64_t id           = MONITOR_ID;
   uint8_t  tag[tagSize];
   union {
     DataPacket   data = {0};
