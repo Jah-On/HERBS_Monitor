@@ -148,7 +148,10 @@ bool initPeripherals() {
   pinMode(SOUND_ADC, INPUT);
   analogRead(SOUND_ADC);
 
-  externI2C.begin(I2C_SDA, I2C_SCL, 100000);
+  if (!externI2C.begin(I2C_SDA, I2C_SCL, 100000)){
+    DEBUG_PRINT("Failed to start secondary I2C!");
+    return false;
+  }
   externI2C.setBufferSize(10);
   
   sht31.begin();
@@ -161,10 +164,24 @@ bool initPeripherals() {
 }
 
 bool updateFromI2C(void* cbData){
-  sht31.readBoth(
+  SHT31_Error_Codes err = sht31.readBoth(
     latestData.hive_temp, 
     latestData.humidity
   );
+
+  switch (err) {
+  case SHT31_Error_Codes::BUFFER_NOT_FILLED:
+    DEBUG_PRINT("I2C buffer did not get all the data!");
+    break;
+  case SHT31_Error_Codes::TEMP_CRC_FAILED:
+    DEBUG_PRINT("Temperature CRC failed!");
+    break;
+  case SHT31_Error_Codes::HUMD_CRC_FAILED:
+    DEBUG_PRINT("Humidity CRC failed!");
+    break;
+  default:
+    break;
+  }
 
   bmp390.performReading();
   

@@ -9,6 +9,13 @@
 template<typename X>
 concept NUMBER = (std::is_integral_v<X> || std::is_floating_point_v<X>);
 
+typedef enum class SHT31_Error_Codes {
+  NONE = 0,
+  BUFFER_NOT_FILLED,
+  TEMP_CRC_FAILED,
+  HUMD_CRC_FAILED
+} SHT31_Error_Codes;
+
 class SHT31 {
 private:
   // Static members
@@ -26,8 +33,8 @@ private:
   double   temperature = NAN;
   double   humidity    = NAN;
 
-  bool    sensorRead();
-  void    writeCommand(const uint8_t command[2]);
+  SHT31_Error_Codes    sensorRead();
+  void                 writeCommand(const uint8_t command[2]);
 
 public:
   SHT31(TwoWire* handle = &Wire);
@@ -38,7 +45,7 @@ public:
   double readHumidity();
 
   template<NUMBER T, NUMBER H>
-  void   readBoth(T& t, H& h);
+  SHT31_Error_Codes readBoth(T& t, H& h);
 
   // Static Public Functions
   static uint8_t crc8(uint8_t* encoded, size_t length);

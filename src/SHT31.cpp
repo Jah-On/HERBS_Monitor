@@ -1,16 +1,20 @@
+#include "esp32-hal.h"
 #include <stdint.h>
 #include <include/SHT31.hpp>
 
-bool SHT31::sensorRead(){
+SHT31_Error_Codes SHT31::sensorRead(){
   writeCommand(MEAS_HIG);
 
-  delay(16);
+  delay(40);
 
   wireHandle->requestFrom(i2cAddress, 6);
 
-  if (wireHandle->readBytes(buffer, 6) != 6        ) return false;
-  if (crc8(buffer,     2)              != buffer[2]) return false; // Temperature CRC
-  if (crc8(buffer + 3, 2)              != buffer[5]) return false; // Humidity CRC
+  if (wireHandle->readBytes(buffer, 6) != 6        ) 
+    return SHT31_Error_Codes::BUFFER_NOT_FILLED;
+  if (crc8(buffer,     2)              != buffer[2]) 
+    return SHT31_Error_Codes::TEMP_CRC_FAILED; // Temperature CRC
+  if (crc8(buffer + 3, 2)              != buffer[5]) 
+    return SHT31_Error_Codes::HUMD_CRC_FAILED; // Humidity CRC
   
   uint16_t tempT = ((uint16_t)buffer[0] << 8) | buffer[1];
   uint16_t tempH = ((uint16_t)buffer[3] << 8) | buffer[4];
@@ -25,7 +29,7 @@ bool SHT31::sensorRead(){
   humidity    *= 100;
   humidity    /= 0xFFFF;
 
-  return true;
+  return SHT31_Error_Codes::NONE;
 }
 
 void SHT31::writeCommand(const uint8_t command[2]){
@@ -49,28 +53,41 @@ void SHT31::begin(uint8_t i2cAddress){
 }
 
 double SHT31::readTemperature(){
-  if (!sensorRead()) return NAN;
-
-  return temperature;
+  switch (sensorRead()) {
+  case SHT31_Error_Codes::NONE:
+    return temperature;
+  default:
+    return NAN;
+  }
 }
 
 double SHT31::readHumidity(){
-  if (!sensorRead()) return NAN;
-
-  return humidity;
+  switch (sensorRead()) {
+  case SHT31_Error_Codes::NONE:
+    return humidity;
+  default:
+    return NAN;
+  }
 }
 
 template<NUMBER T, NUMBER H>
-void SHT31::readBoth(T& t, H& h){
-  if (!sensorRead()){
+SHT31_Error_Codes SHT31::readBoth(T& t, H& h){
+  SHT31_Error_Codes result = sensorRead();
+
+  switch (result) {
+  case SHT31_Error_Codes::NONE:
+    break;
+  default:
     t = -128;
-    h = -1;
-    return;
+    h =  255;
+    return result;
   }
 
   // Rounding
   t = temperature + 0.5;
   h = humidity + 0.5;
+
+  return SHT31_Error_Codes::NONE;
 }
 
 uint8_t SHT31::crc8(uint8_t* encoded, size_t length){
@@ -90,4 +107,4 @@ uint8_t SHT31::crc8(uint8_t* encoded, size_t length){
   return result;
 }
 
-template void SHT31::readBoth<int8_t, uint8_t>(int8_t&, uint8_t&);
+template SHT31_Error_Codes SHT31::readBoth<int8_t, uint8_t>(int8_t&, uint8_t&);
