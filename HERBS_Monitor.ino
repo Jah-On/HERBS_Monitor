@@ -60,9 +60,9 @@ Timer<8, millis> timer;
 
 Timer<1, millis>::Task resend;
 
-TwoWire externI2C = TwoWire(0x01);
+// TwoWire externI2C = TwoWire(0x01);
 
-SHT31  sht31   = SHT31(&externI2C);
+SHT31  sht31   = SHT31();
 BMP390 bmp390  = BMP390();
 
 CircularArray<uint16_t, 128> audioSamples;
@@ -137,6 +137,13 @@ bool initLoRa() {
 bool initPeripherals() {
   heltec_setup();
 
+  display.end();
+  if (!Wire.setPins(I2C_SDA, I2C_SCL)){
+    DEBUG_PRINT("Failed to switch primary I2C pins!");
+    return false;
+  }
+  Wire.setBufferSize(10);
+
   pinMode(USER_LED, OUTPUT);
 
   // Power
@@ -148,15 +155,15 @@ bool initPeripherals() {
   pinMode(SOUND_ADC, INPUT);
   analogRead(SOUND_ADC);
 
-  if (!externI2C.begin(I2C_SDA, I2C_SCL, 100000)){
-    DEBUG_PRINT("Failed to start secondary I2C!");
-    return false;
-  }
-  externI2C.setBufferSize(10);
+  // if (!externI2C.begin(I2C_SDA, I2C_SCL, 100000)){
+  //   DEBUG_PRINT("Failed to start secondary I2C!");
+  //   return false;
+  // }
+  // externI2C.setBufferSize(10);
   
   sht31.begin();
 
-  bmp390.begin_I2C(BMP3XX_DEFAULT_ADDRESS, &externI2C);
+  bmp390.begin_I2C(BMP3XX_DEFAULT_ADDRESS);
   bmp390.setTemperatureOversampling(BMP3_OVERSAMPLING_16X);
   bmp390.setPressureOversampling(BMP3_IIR_FILTER_COEFF_63);
 
