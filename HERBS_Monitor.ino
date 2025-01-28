@@ -35,6 +35,8 @@ Author(s):
 #include <include/SHT31.hpp>
 #include <include/CircularArray.hpp>
 
+#include <esp_adc/adc_oneshot.h>
+
 #define MINUTE_US  6e7
 #define HOUR_US   36e8
 
@@ -43,6 +45,25 @@ Author(s):
 #define PACKET_RETRY_RATE  300e3 // in ms
 
 #define REDUCED_RATE_MULTIPLE 5
+
+constexpr float VBAT_ADC_MULTIPLIER = 5.0f/4096;
+
+adc_oneshot_unit_init_cfg_t adc0_init = {
+  .unit_id   = ADC_UNIT_1,
+  .ulp_mode  = ADC_ULP_MODE_RISCV
+};
+
+adc_oneshot_chan_cfg_t battery_adc_cfg = {
+  .atten    = ADC_ATTEN_DB_0,
+  .bitwidth = ADC_BITWIDTH_12
+};
+
+adc_oneshot_chan_cfg_t sound_adc_cfg = {
+  .atten    = ADC_ATTEN_DB_2_5,
+  .bitwidth = ADC_BITWIDTH_13
+};
+
+adc_oneshot_unit_handle_t adc0_handle; 
 
 typedef Adafruit_BMP3XX BMP390;
 
@@ -90,7 +111,7 @@ void setup() {
   // Init functions
   if (!initLoRa())        return initError("LoRa init failed!");
 
-  timer.every(1e2, checkBatteryLevel);
+  timer.every(2e2, checkBatteryLevel);
 
   timer.in(send_rate, sendDataPacket);
 
@@ -100,7 +121,7 @@ void setup() {
   turnOnSoundSensor(nullptr);
 
   #ifdef DEBUG
-  timer.every(10e3, printData);
+  timer.every(5e3, printData);
   #endif
 
   // Light sleep configuration
@@ -113,16 +134,23 @@ void setup() {
   esp_sleep_pd_config(ESP_PD_DOMAIN_VDDSDIO,    ESP_PD_OPTION_ON);
   esp_sleep_pd_config(ESP_PD_DOMAIN_RC_FAST,    ESP_PD_OPTION_ON);
   esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+
+  // Disable most components except IO peripherals
   esp_sleep_pd_config(ESP_PD_DOMAIN_XTAL,       ESP_PD_OPTION_OFF);
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RC_FAST,    ESP_PD_OPTION_OFF);
   esp_sleep_pd_config(ESP_PD_DOMAIN_MODEM,      ESP_PD_OPTION_OFF);
   esp_sleep_pd_config(ESP_PD_DOMAIN_CPU,        ESP_PD_OPTION_OFF);
   esp_sleep_pd_config(ESP_PD_DOMAIN_VDDSDIO,    ESP_PD_OPTION_OFF);
   esp_sleep_enable_ulp_wakeup();
-  esp_sleep_enable_timer_wakeup(5e2);
+  esp_sleep_enable_timer_wakeup(3400); // Oddly good perf/watt value
 
   sendEventPacket(EventCode::NODE_ONLINE);
 
   radio.sleep();
+
+  #ifndef DEBUG
+  Serial.end();
+  #endif
 }
 
 void loop() {
@@ -147,8 +175,13 @@ bool initLoRa() {
 }
 
 bool initPeripherals() {
-  heltec_setup();
+  adc_oneshot_new_unit(&adc0_init, &adc0_handle);
+  adc_oneshot_config_channel(adc0_handle, ADC_CHANNEL_0, &battery_adc_cfg);
+  adc_oneshot_config_channel(adc0_handle, ADC_CHANNEL_6, &sound_adc_cfg);
 
+  hspi->begin(SCK, MISO, MOSI, SS);
+
+  heltec_display_power(false);
   display.end();
   Wire.end();
   
@@ -169,15 +202,6 @@ bool initPeripherals() {
   pinMode(I2C_VCC,   OUTPUT);
   digitalWrite(SOUND_VCC, LOW);
   digitalWrite(I2C_VCC,   HIGH);
-
-  pinMode(SOUND_ADC, INPUT);
-  analogRead(SOUND_ADC);
-
-  // if (!externI2C.begin(I2C_SDA, I2C_SCL, 100000)){
-  //   DEBUG_PRINT("Failed to start secondary I2C!");
-  //   return false;
-  // }
-  // externI2C.setBufferSize(10);
   
   sht31.begin();
 
@@ -233,12 +257,16 @@ bool updateFromI2C(void* cbData){
 }
 
 bool updateSound(void* cbData) {
+  int rawADC;
   latestData.acoustics = 0;
   
-  audioSamples.push(analogRead(SOUND_ADC));
+  adc_oneshot_read(adc0_handle, ADC_CHANNEL_6, &rawADC);
+  audioSamples.push(rawADC);
+
   for (uint8_t index = 1; index < audioSamples.capacity(); ++index){
     esp_light_sleep_start();
-    audioSamples.push(analogRead(SOUND_ADC));
+    adc_oneshot_read(adc0_handle, ADC_CHANNEL_6, &rawADC);
+    audioSamples.push(rawADC);
     latestData.acoustics += abs(audioSamples[index - 1] - audioSamples[index]);
   }
   latestData.acoustics /= audioSamples.capacity();
@@ -251,7 +279,17 @@ bool updateSound(void* cbData) {
 }
 
 bool checkBatteryLevel(void* cbData) {
-  latestData.battery = heltec_battery_percent();
+  pinMode(VBAT_CTRL, OUTPUT);
+  digitalWrite(VBAT_CTRL, LOW);
+
+  int rawADC;
+  adc_oneshot_read(adc0_handle, ADC_CHANNEL_0, &rawADC);
+
+  pinMode(VBAT_CTRL, INPUT);
+
+  float batteryVoltage = VBAT_ADC_MULTIPLIER * rawADC;
+
+  latestData.battery = heltec_battery_percent(batteryVoltage);
 
   switch (latestData.battery) {
   case 0 ... 14:
@@ -261,8 +299,6 @@ bool checkBatteryLevel(void* cbData) {
     digitalWrite(SOUND_VCC, LOW);
 
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
-    esp_sleep_pd_config(ESP_PD_DOMAIN_RC_FAST,    ESP_PD_OPTION_OFF);
-    esp_sleep_pd_config(ESP_PD_DOMAIN_XTAL,       ESP_PD_OPTION_OFF);
 
     esp_deep_sleep(HOUR_US);
 
