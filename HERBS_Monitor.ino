@@ -60,8 +60,6 @@ Timer<8, millis> timer;
 
 Timer<1, millis>::Task resend;
 
-// TwoWire externI2C = TwoWire(0x01);
-
 SHT31  sht31   = SHT31();
 BMP390 bmp390  = BMP390();
 
@@ -346,7 +344,7 @@ void sendPacket(Packet& packet, size_t packetLength) {
 void encryptPacket(Packet& packet, size_t dataLength){
   crypto.encrypt(
     packet.raw,
-    (uint8_t*)&packet.raw,
+    packet.raw,
     dataLength
   );
 
@@ -376,11 +374,9 @@ void processRecievedPackets(){
 
     Packet* packet = &recievedPackets.front();
 
-    encryptedEventData = packet->raw[0];
-
     crypto.decrypt(
       packet->raw,
-      &encryptedEventData,
+      packet->raw,
       sizeof(EventPacket)
     );
 
@@ -393,7 +389,7 @@ void processRecievedPackets(){
 
       newCrypt.decrypt(
         packet->raw,
-        &encryptedEventData,
+        packet->raw,
         sizeof(EventPacket)
       );
 
