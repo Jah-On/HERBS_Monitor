@@ -79,7 +79,7 @@ void setup() {
   
   if (!initPeripherals()) return initError("Peripheral init failed!");
 
-  checkBatteryLevel();
+  checkBatteryLevel(0);
 
   // Init encryption
   if (!baseCrypto.setKey(encryption.key, 16))
@@ -91,6 +91,8 @@ void setup() {
 
   // Init functions
   if (!initLoRa())        return initError("LoRa init failed!");
+
+  timer.every(1e2, checkBatteryLevel);
 
   timer.in(send_rate, sendDataPacket);
 
@@ -104,8 +106,21 @@ void setup() {
   #endif
 
   // Light sleep configuration
+  // Need to enable all before disabling some.
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RC_FAST,    ESP_PD_OPTION_ON);
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+  esp_sleep_pd_config(ESP_PD_DOMAIN_XTAL,       ESP_PD_OPTION_ON);
+  esp_sleep_pd_config(ESP_PD_DOMAIN_MODEM,      ESP_PD_OPTION_ON);
+  esp_sleep_pd_config(ESP_PD_DOMAIN_CPU,        ESP_PD_OPTION_ON);
+  esp_sleep_pd_config(ESP_PD_DOMAIN_VDDSDIO,    ESP_PD_OPTION_ON);
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RC_FAST,    ESP_PD_OPTION_ON);
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+  esp_sleep_pd_config(ESP_PD_DOMAIN_XTAL,       ESP_PD_OPTION_OFF);
+  esp_sleep_pd_config(ESP_PD_DOMAIN_MODEM,      ESP_PD_OPTION_OFF);
+  esp_sleep_pd_config(ESP_PD_DOMAIN_CPU,        ESP_PD_OPTION_OFF);
+  esp_sleep_pd_config(ESP_PD_DOMAIN_VDDSDIO,    ESP_PD_OPTION_OFF);
   esp_sleep_enable_ulp_wakeup();
-  esp_sleep_enable_timer_wakeup(50e3);
+  esp_sleep_enable_timer_wakeup(5e2);
 
   sendEventPacket(EventCode::NODE_ONLINE);
 
@@ -113,7 +128,6 @@ void setup() {
 }
 
 void loop() {
-  checkBatteryLevel();
   processRecievedPackets();
 
   timer.tick();
@@ -238,7 +252,7 @@ bool updateSound(void* cbData) {
   return false;
 }
 
-void checkBatteryLevel() {
+bool checkBatteryLevel(void* cbData) {
   latestData.battery = heltec_battery_percent();
 
   switch (latestData.battery) {
@@ -259,12 +273,12 @@ void checkBatteryLevel() {
     send_rate   = PACKET_SEND_RATE  * REDUCED_RATE_MULTIPLE;
     resend_rate = PACKET_RETRY_RATE * REDUCED_RATE_MULTIPLE;
 
-    return;
+    return true;
   default:
     send_rate   = PACKET_SEND_RATE;
     resend_rate = PACKET_RETRY_RATE;
     
-    return;
+    return true;
   }
 }
 
