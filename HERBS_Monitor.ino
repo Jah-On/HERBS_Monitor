@@ -317,12 +317,12 @@ bool checkBatteryLevel(void* cbData) {
 }
 
 bool printData(void* cbData) {
-  Serial.printf("Battery percent is %u\n",     latestData.battery);
+  Serial.printf("\nBattery percent is %u\n",     latestData.battery);
   Serial.printf("Hive temperature is %i\n",    latestData.hive_temp);
   Serial.printf("Outside temperature is %i\n", latestData.extern_temp);
   Serial.printf("Humidity is %u\n",            latestData.humidity);
   Serial.printf("Pressure is %u\n",            latestData.pressure);
-  Serial.printf("Sound level is %u\n",         latestData.acoustics);
+  Serial.printf("Sound level is %u\n\n",         latestData.acoustics);
 
   return true;
 }

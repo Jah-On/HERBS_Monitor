@@ -42,8 +42,8 @@ SHT31_Error_Codes SHT31::sensorRead(){
 SHT31_Error_Codes SHT31::writeCommand(const uint8_t command[2]){
   wireHandle->beginTransmission(i2cAddress);
 
-  wireHandle->write(command[1]);
   wireHandle->write(command[0]);
+  wireHandle->write(command[1]);
 
   switch (wireHandle->endTransmission()){
   case 1:
